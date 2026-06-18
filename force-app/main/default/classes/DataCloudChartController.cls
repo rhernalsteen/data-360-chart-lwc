@@ -185,9 +185,13 @@ public without sharing class DataCloudChartController {
             String countField = String.isNotBlank(params.aggregateField)
                 ? params.aggregateField
                 : params.groupByField;
-            String aggExpr = (params.aggregateFunction == 'COUNT')
-                ? 'COUNT(' + countField + ') aggValue'
-                : params.aggregateFunction + '(' + params.aggregateField + ') aggValue';
+            // No alias on the aggregate function — Data Cloud SOQL rejects ORDER BY on an
+            // alias (e.g. "No such column 'aggValue'"). Standard SOQL auto-assigns 'expr0'
+            // as the key in AggregateResult when no alias is provided; Data Cloud does too.
+            // ORDER BY uses the full expression instead of the alias for the same reason.
+            String aggFn    = (params.aggregateFunction == 'COUNT')
+                ? 'COUNT(' + countField + ')'
+                : params.aggregateFunction + '(' + params.aggregateField + ')';
 
             // Build WHERE clause. sourceValue is a bind variable; filter values
             // are escaped via String.escapeSingleQuotes() — Data Cloud objects do
@@ -200,11 +204,11 @@ public without sharing class DataCloudChartController {
                 }
             }
 
-            String query = 'SELECT ' + params.groupByField + ', ' + aggExpr
+            String query = 'SELECT ' + params.groupByField + ', ' + aggFn
                          + ' FROM '    + params.targetObject
                          + ' WHERE '   + whereClause
                          + ' GROUP BY ' + params.groupByField
-                         + ' ORDER BY aggValue ' + dir
+                         + ' ORDER BY ' + aggFn + ' ' + dir
                          + ' LIMIT :maxGroups';
 
             String sourceValue = params.sourceValue;
@@ -222,7 +226,9 @@ public without sharing class DataCloudChartController {
             for (AggregateResult ar : results) {
                 Map<String, Object> row = new Map<String, Object>();
                 Object groupVal = ar.get(params.groupByField);
-                Object aggVal   = ar.get('aggValue');
+                // 'expr0' is Salesforce's auto-assigned key for the first aggregate
+                // function in AggregateResult when no alias is defined in SOQL.
+                Object aggVal   = ar.get('expr0');
                 // Defensive coercion: Data Cloud may return wrapper types;
                 // stringify the group label and ensure aggValue is numeric.
                 row.put('groupValue', groupVal != null ? String.valueOf(groupVal) : '');
