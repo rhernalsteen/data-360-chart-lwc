@@ -60,6 +60,13 @@ export default class DataCloudChart extends LightningElement {
     @api set aggregateField(v) { this._aggregateField = v ? String(v).trim() : null; this._maybeRefetch(); }
     get  aggregateField() { return this._aggregateField; }
 
+    _sortBy = 'aggregate';
+    @api set sortBy(v) {
+        this._sortBy = (v === 'groupBy') ? 'groupBy' : 'aggregate';
+        this._maybeRefetch();
+    }
+    get sortBy() { return this._sortBy; }
+
     _sortDirection = 'DESC';
     @api set sortDirection(v) {
         this._sortDirection = (v === 'ASC') ? 'ASC' : 'DESC';
@@ -189,6 +196,7 @@ export default class DataCloudChart extends LightningElement {
         const groupByField      = this._groupByField      ? String(this._groupByField)      : null;
         const aggregateFunction = this._aggregateFunction ? String(this._aggregateFunction) : null;
         const aggregateField    = this._aggregateField    ? String(this._aggregateField)    : null;
+        const sortBy            = this._sortBy            ? String(this._sortBy)            : 'aggregate';
         const sortDirection     = this._sortDirection     ? String(this._sortDirection)     : 'DESC';
 
         if (!(targetObject && targetField && groupByField && aggregateFunction && sourceValue)) {
@@ -210,6 +218,7 @@ export default class DataCloudChart extends LightningElement {
                     groupByField,
                     aggregateFunction,
                     aggregateField,
+                    sortBy,
                     sortDirection,
                     filters: parsedFilters
                 })

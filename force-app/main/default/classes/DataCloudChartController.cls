@@ -33,7 +33,8 @@ public without sharing class DataCloudChartController {
         @AuraEnabled public String              groupByField;
         @AuraEnabled public String              aggregateFunction; // SUM, COUNT, AVG, MIN, MAX
         @AuraEnabled public String              aggregateField;    // blank OK when COUNT
-        @AuraEnabled public String              sortDirection;     // ASC | DESC on aggValue
+        @AuraEnabled public String              sortBy;            // 'aggregate' | 'groupBy'
+        @AuraEnabled public String              sortDirection;     // ASC | DESC
         @AuraEnabled public List<FilterCondition> filters;
     }
 
@@ -204,11 +205,17 @@ public without sharing class DataCloudChartController {
                 }
             }
 
+            // sortBy: 'groupBy' orders alphabetically by the group label;
+            // 'aggregate' (default) orders by the aggregate value.
+            // Data Cloud requires the full expression in ORDER BY — aliases not supported.
+            Boolean sortByGroup = 'groupBy'.equalsIgnoreCase(params.sortBy);
+            String orderByExpr  = sortByGroup ? params.groupByField : aggFn;
+
             String query = 'SELECT ' + params.groupByField + ', ' + aggFn
                          + ' FROM '    + params.targetObject
                          + ' WHERE '   + whereClause
                          + ' GROUP BY ' + params.groupByField
-                         + ' ORDER BY ' + aggFn + ' ' + dir
+                         + ' ORDER BY ' + orderByExpr + ' ' + dir
                          + ' LIMIT :maxGroups';
 
             String sourceValue = params.sourceValue;
@@ -262,9 +269,10 @@ public without sharing class DataCloudChartController {
     /**
      * Converts a validated FilterCondition into a SOQL predicate fragment.
      *
-     * Field and operator have already been allowlisted above. Values are escaped
-     * with String.escapeSingleQuotes() — the only safe approach for dynamic SOQL
-     * when bind variables can't be declared statically for an unknown-count list.
+     * Field and operator have already been allowlisted above. String values are escaped
+     * with String.escapeSingleQuotes(). Numeric values are left unquoted — Data Cloud
+     * (and standard Salesforce SOQL) require numeric literals without quotes; quoting them
+     * causes a "must be of type double and should not be enclosed in quotes" error.
      */
     @TestVisible
     private static String buildFilterClause(FilterCondition fc) {
@@ -274,17 +282,16 @@ public without sharing class DataCloudChartController {
         if (op == 'notnull') return field + ' != null';
         if (op == 'isnull')  return field + ' = null';
 
-        // For `in`, value is semicolon-delimited: 'Val1;Val2;Val3'
+        // For `in`, value is semicolon-delimited: 'Val1;Val2;Val3' or '100;200;300'
         if (op == 'in') {
             List<String> parts = fc.value != null ? fc.value.split(';') : new List<String>();
-            List<String> quoted = new List<String>();
+            List<String> formatted = new List<String>();
             for (String p : parts) {
-                quoted.add('\'' + String.escapeSingleQuotes(p.trim()) + '\'');
+                formatted.add(formatFilterValue(p.trim()));
             }
-            return field + ' IN (' + String.join(quoted, ', ') + ')';
+            return field + ' IN (' + String.join(formatted, ', ') + ')';
         }
 
-        String escaped = String.escapeSingleQuotes(fc.value != null ? fc.value : '');
         String soqlOp;
         switch on op {
             when 'eq'   { soqlOp = '='; }
@@ -296,6 +303,23 @@ public without sharing class DataCloudChartController {
             when 'like' { soqlOp = 'LIKE'; }
             when else   { soqlOp = '='; }
         }
-        return field + ' ' + soqlOp + ' \'' + escaped + '\'';
+        return field + ' ' + soqlOp + ' ' + formatFilterValue(fc.value);
+    }
+
+    /**
+     * Returns the SOQL literal for a filter value.
+     * Numeric values are returned as-is (no quotes) — quoting them in Data Cloud SOQL
+     * causes a type mismatch error on numeric/currency fields.
+     * Everything else is single-quoted with injection escaping.
+     */
+    @TestVisible
+    private static String formatFilterValue(String val) {
+        if (val == null) return 'null';
+        try {
+            Decimal.valueOf(val);
+            return val; // safe numeric literal — no quotes
+        } catch (Exception e) {
+            return '\'' + String.escapeSingleQuotes(val) + '\'';
+        }
     }
 }

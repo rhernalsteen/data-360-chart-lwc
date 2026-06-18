@@ -172,11 +172,37 @@ private class DataCloudChartControllerTest {
     }
 
     @IsTest
-    static void buildFilterClauseGte() {
+    static void buildFilterClauseGteNumericUnquoted() {
+        // Numeric values must NOT be quoted in Data Cloud SOQL — quoting causes a type error.
         DataCloudChartController.FilterCondition fc = new DataCloudChartController.FilterCondition();
         fc.field = 'Amount__c'; fc.operator = 'gte'; fc.value = '10000';
         String clause = DataCloudChartController.buildFilterClause(fc);
-        System.assertEquals('Amount__c >= \'10000\'', clause);
+        System.assertEquals('Amount__c >= 10000', clause);
+    }
+
+    @IsTest
+    static void buildFilterClauseEqStringQuoted() {
+        DataCloudChartController.FilterCondition fc = new DataCloudChartController.FilterCondition();
+        fc.field = 'Stage__c'; fc.operator = 'eq'; fc.value = 'Closed Won';
+        String clause = DataCloudChartController.buildFilterClause(fc);
+        System.assertEquals('Stage__c = \'Closed Won\'', clause);
+    }
+
+    @IsTest
+    static void formatFilterValueNumeric() {
+        System.assertEquals('42',     DataCloudChartController.formatFilterValue('42'));
+        System.assertEquals('3.14',   DataCloudChartController.formatFilterValue('3.14'));
+        System.assertEquals('-100',   DataCloudChartController.formatFilterValue('-100'));
+    }
+
+    @IsTest
+    static void formatFilterValueString() {
+        System.assertEquals('\'Sales\'', DataCloudChartController.formatFilterValue('Sales'));
+    }
+
+    @IsTest
+    static void formatFilterValueNull() {
+        System.assertEquals('null', DataCloudChartController.formatFilterValue(null));
     }
 
     @IsTest
@@ -196,13 +222,24 @@ private class DataCloudChartControllerTest {
     }
 
     @IsTest
-    static void buildFilterClauseIn() {
+    static void buildFilterClauseInStrings() {
         DataCloudChartController.FilterCondition fc = new DataCloudChartController.FilterCondition();
         fc.field = 'Stage__c'; fc.operator = 'in'; fc.value = 'Closed Won;Prospecting';
         String clause = DataCloudChartController.buildFilterClause(fc);
         System.assert(clause.startsWith('Stage__c IN ('));
         System.assert(clause.contains('\'Closed Won\''));
         System.assert(clause.contains('\'Prospecting\''));
+    }
+
+    @IsTest
+    static void buildFilterClauseInNumerics() {
+        // Numeric values inside IN must also be unquoted
+        DataCloudChartController.FilterCondition fc = new DataCloudChartController.FilterCondition();
+        fc.field = 'Amount__c'; fc.operator = 'in'; fc.value = '100;200;300';
+        String clause = DataCloudChartController.buildFilterClause(fc);
+        System.assert(clause.startsWith('Amount__c IN ('));
+        System.assert(clause.contains('100'));
+        System.assert(!clause.contains('\'100\''), 'Numeric IN values must not be quoted');
     }
 
     @IsTest

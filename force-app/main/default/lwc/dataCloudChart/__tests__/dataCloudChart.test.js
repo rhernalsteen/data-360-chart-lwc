@@ -256,6 +256,20 @@ describe('c-data-cloud-chart — Apex call parameters', () => {
         expect(sent.aggregateFunction).toBe('SUM');
         expect(sent.aggregateField).toBe('ssot__Amount__c');
         expect(sent.sortDirection).toBe('ASC');
+        expect(sent.sortBy).toBe('aggregate');
+    });
+
+    it('sends sortBy groupBy when set', async () => {
+        fetchChartDataJson.mockResolvedValueOnce(jsonResult({ rows: sampleRows }));
+        const el = buildElement({ sortBy: 'groupBy', sortDirection: 'ASC' });
+        document.body.appendChild(el);
+        await emitRecord(el, '001xxxxxxxxxxxx');
+        await flush();
+        await flush();
+
+        const sent = JSON.parse(fetchChartDataJson.mock.calls[0][0].paramsJson);
+        expect(sent.sortBy).toBe('groupBy');
+        expect(sent.sortDirection).toBe('ASC');
     });
 
     it('parses filter DSL and sends conditions to Apex', async () => {
