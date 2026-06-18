@@ -1,0 +1,17 @@
+{
+    "name": "data-360-chart-lwc",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Data Cloud Chart LWC",
+    "scripts": {
+        "test": "sfdx-lwc-jest",
+        "test:watch": "sfdx-lwc-jest --watch",
+        "test:debug": "sfdx-lwc-jest --debug",
+        "test:coverage": "sfdx-lwc-jest --coverage"
+    },
+    "devDependencies": {
+        "@lwc/eslint-plugin-lwc": "^2.0.0",
+        "@salesforce/eslint-config-lwc": "^3.5.0",
+        "@salesforce/sfdx-lwc-jest": "^7.0.1"
+    }
+}

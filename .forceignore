@@ -1,0 +1,8 @@
+# Jest tests should never be deployed to a Salesforce org.
+**/__tests__/**
+**/*.test.js
+
+# Local dev / build artifacts
+node_modules/
+coverage/
+.localdevserver/

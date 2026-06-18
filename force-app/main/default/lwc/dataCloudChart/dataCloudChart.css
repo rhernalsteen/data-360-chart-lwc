@@ -1,0 +1,47 @@
+.dc-card-header {
+    border-bottom: var(--lwc-borderWidthThin, 1px) solid var(--lwc-colorBorder, #dddbda);
+    border-radius: var(--lwc-borderRadiusMedium, 0.25rem) var(--lwc-borderRadiusMedium, 0.25rem) 0 0;
+    padding: var(--lwc-spacingSmall, 0.75rem) var(--lwc-spacingMedium, 1rem);
+}
+
+.dc-chart-container {
+    position: relative;
+    height: 300px;
+    padding: var(--lwc-spacingSmall, 0.75rem) var(--lwc-spacingMedium, 1rem);
+}
+
+/* Skeleton loading state — bar chart silhouette growing from the bottom */
+.dc-loading {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--lwc-spacingSmall, 0.75rem);
+    padding: var(--lwc-spacingMedium, 1rem) var(--lwc-spacingMedium, 1rem);
+    height: 200px;
+}
+
+/* Base skeleton bar — shimmer animation has no SLDS equivalent */
+.dc-skeleton-bar {
+    flex: 1;
+    border-radius: var(--lwc-borderRadiusSmall, 0.125rem) var(--lwc-borderRadiusSmall, 0.125rem) 0 0;
+    background: linear-gradient(
+        90deg,
+        var(--lwc-colorBackground, #f3f2f2) 25%,
+        var(--lwc-colorBorder, #e5e5e5) 50%,
+        var(--lwc-colorBackground, #f3f2f2) 75%
+    );
+    background-size: 200% 100%;
+    animation: dc-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.dc-skeleton-bar_short  { height: 35%; }
+.dc-skeleton-bar_medium { height: 60%; }
+.dc-skeleton-bar_tall   { height: 90%; }
+
+@keyframes dc-skeleton-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dc-skeleton-bar { animation: none; }
+}

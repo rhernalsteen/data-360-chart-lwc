@@ -1,0 +1,66 @@
+<template>
+    <article class="slds-card">
+
+        <div class="slds-grid dc-card-header slds-color__background_gray-3">
+            <header class="slds-media slds-media_center slds-has-flexi-truncate">
+                <div class="slds-media__figure">
+                    <lightning-icon icon-name="standard:report" size="small"></lightning-icon>
+                </div>
+                <div class="slds-media__body">
+                    <h2 class="slds-card__header-title slds-truncate">{cardTitle}</h2>
+                </div>
+            </header>
+        </div>
+
+        <div class="slds-card__body slds-card__body_inner">
+
+            <template lwc:if={isLoading}>
+                <div class="dc-loading" aria-busy="true" aria-label="Loading chart">
+                    <div class="dc-skeleton-bar dc-skeleton-bar_medium"></div>
+                    <div class="dc-skeleton-bar dc-skeleton-bar_tall"></div>
+                    <div class="dc-skeleton-bar dc-skeleton-bar_short"></div>
+                    <div class="dc-skeleton-bar dc-skeleton-bar_medium"></div>
+                    <div class="dc-skeleton-bar dc-skeleton-bar_tall"></div>
+                </div>
+            </template>
+
+            <template lwc:elseif={isUnconfigured}>
+                <div class="slds-grid slds-grid_vertical slds-media_center slds-var-p-around_x-large slds-text-align_center">
+                    <h3 class="slds-text-heading_medium">Component Not Configured</h3>
+                    <p class="slds-text-body_regular slds-var-m-top_x-small">
+                        Set <strong>Target Object</strong>, <strong>Source Field</strong>,
+                        <strong>Target Field</strong>, <strong>Group By Field</strong>,
+                        <strong>Aggregate Function</strong>, and <strong>Chart Type</strong>
+                        in Lightning App Builder.
+                    </p>
+                </div>
+            </template>
+
+            <template lwc:elseif={isError}>
+                <div class="slds-grid slds-grid_vertical slds-media_center slds-var-p-around_x-large slds-text-align_center">
+                    <h3 class="slds-text-heading_medium">Something went wrong</h3>
+                    <p class="slds-text-body_regular slds-var-m-top_x-small">{_errorMessage}</p>
+                    <lightning-button label="Retry" onclick={handleRetry} class="slds-var-m-top_small">
+                    </lightning-button>
+                </div>
+            </template>
+
+            <template lwc:elseif={isEmpty}>
+                <div class="slds-grid slds-grid_vertical slds-media_center slds-var-p-around_x-large slds-text-align_center">
+                    <h3 class="slds-text-heading_medium">No data to display</h3>
+                    <p class="slds-text-body_regular slds-var-m-top_x-small">
+                        No records matched the current criteria.
+                    </p>
+                </div>
+            </template>
+
+            <template lwc:elseif={hasData}>
+                <div class="dc-chart-container">
+                    <canvas class="dc-canvas"></canvas>
+                </div>
+            </template>
+
+        </div>
+
+    </article>
+</template>

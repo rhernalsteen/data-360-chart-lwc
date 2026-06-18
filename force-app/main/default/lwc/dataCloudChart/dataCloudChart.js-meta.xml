@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>66.0</apiVersion>
+    <isExposed>true</isExposed>
+    <targets>
+        <target>lightning__RecordPage</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__RecordPage">
+            <property name="componentTitle"
+                      type="String"
+                      label="Card Title"
+                      description="Header label. Defaults to 'Chart'." />
+            <property name="targetObject"
+                      type="String"
+                      label="Target Object API Name"
+                      description="DLO/DMO API name to aggregate (e.g., ssot__SalesOrder__dlm)." />
+            <property name="sourceField"
+                      type="String"
+                      label="Source Field (CRM Record)"
+                      description="Field on this record whose value links to Data Cloud (e.g., Id)." />
+            <property name="targetField"
+                      type="String"
+                      label="Target Field (Data Cloud)"
+                      description="Field on the Data Cloud record that matches the source value (e.g., ssot__AccountId__c)." />
+            <property name="groupByField"
+                      type="String"
+                      label="Group By Field"
+                      description="Field to group by — becomes the chart axis labels or pie slices (e.g., ssot__Stage__c)." />
+            <property name="aggregateFunction"
+                      type="String"
+                      label="Aggregate Function"
+                      datasource="SUM,COUNT,AVG,MIN,MAX"
+                      default="COUNT"
+                      description="Aggregate function to apply to the Aggregate Field." />
+            <property name="aggregateField"
+                      type="String"
+                      label="Aggregate Field"
+                      description="Numeric field to aggregate (e.g., ssot__TotalAmount__c). Not required for COUNT." />
+            <property name="sortDirection"
+                      type="String"
+                      label="Sort Direction"
+                      datasource="ASC,DESC"
+                      default="DESC"
+                      description="Sort order on the aggregate value. DESC shows the largest groups first." />
+            <property name="chartType"
+                      type="String"
+                      label="Chart Type"
+                      datasource="verticalBar,horizontalBar,pie,line"
+                      default="verticalBar" />
+            <property name="filters"
+                      type="String"
+                      label="Filters (Optional)"
+                      description="Extra WHERE conditions. Format: fieldApiName|operator|value, comma-separated. Operators: eq, neq, gt, gte, lt, lte, like, in, notnull, isnull. Use {FieldName} to reference the current record's field value. Example: ssot__Stage__c|eq|Closed Won, ssot__Amount__c|gte|1000, ssot__CloseDate__c|gte|{CloseDate}" />
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

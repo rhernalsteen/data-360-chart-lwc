@@ -1,0 +1,10 @@
+node_modules/
+coverage/
+.localdevserver/
+.sf/
+.sfdx/
+*.log
+
+# Chart.js UMD bundle — download from https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.js
+# and save as force-app/main/default/staticresources/ChartJS.js before deploying.
+force-app/main/default/staticresources/ChartJS.js
