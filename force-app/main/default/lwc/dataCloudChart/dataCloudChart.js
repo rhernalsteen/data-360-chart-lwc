@@ -14,23 +14,21 @@ const STATE = {
 };
 
 const VALID_AGGREGATES  = new Set(['SUM', 'COUNT', 'AVG', 'MIN', 'MAX']);
-const VALID_CHART_TYPES = new Set(['verticalBar', 'horizontalBar', 'pie', 'line']);
+const VALID_CHART_TYPES = new Set(['verticalBar', 'horizontalBar', 'pie', 'line', 'donut', 'kpi']);
 const ALLOWED_OPERATORS = new Set(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'in', 'notnull', 'isnull']);
+const VALID_DATE_TRUNCS = new Set(['day', 'week', 'month', 'quarter', 'year']);
 
-// SLDS-inspired palette so charts feel at home in a Salesforce page
 const CHART_COLORS = [
     '#1589EE', '#04844B', '#FFB75D', '#E4002B', '#7B5EA7',
     '#00A9AC', '#F49542', '#16325C', '#54698D', '#A8B7C7'
 ];
 
+const MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 export default class DataCloudChart extends LightningElement {
-    // Provided by Lightning App Builder for record pages
     @api recordId;
     @api objectApiName;
-
     @api componentTitle = 'Chart';
-
-    // Configurable @api props with setters so App Builder reconfiguration triggers refetch
 
     _targetObject;
     @api set targetObject(v) { this._targetObject = v ? String(v).trim() : null; this._maybeRefetch(); }
@@ -48,6 +46,14 @@ export default class DataCloudChart extends LightningElement {
     @api set groupByField(v) { this._groupByField = v ? String(v).trim() : null; this._maybeRefetch(); }
     get  groupByField() { return this._groupByField; }
 
+    _groupByTrunc;
+    @api set groupByTrunc(v) {
+        const t = v ? String(v).trim().toLowerCase() : null;
+        this._groupByTrunc = VALID_DATE_TRUNCS.has(t) ? t : null;
+        this._maybeRefetch();
+    }
+    get groupByTrunc() { return this._groupByTrunc; }
+
     _aggregateFunction;
     @api set aggregateFunction(v) {
         const upper = v ? String(v).trim().toUpperCase() : null;
@@ -60,45 +66,70 @@ export default class DataCloudChart extends LightningElement {
     @api set aggregateField(v) { this._aggregateField = v ? String(v).trim() : null; this._maybeRefetch(); }
     get  aggregateField() { return this._aggregateField; }
 
-    _sortBy = 'aggregate';
-    @api set sortBy(v) {
-        this._sortBy = (v === 'groupBy') ? 'groupBy' : 'aggregate';
-        this._maybeRefetch();
+    _stackByField;
+    @api set stackByField(v) { this._stackByField = v ? String(v).trim() : null; this._maybeRefetch(); }
+    get  stackByField() { return this._stackByField; }
+
+    _stackMode = 'stacked';
+    @api set stackMode(v) {
+        this._stackMode = (v === 'grouped') ? 'grouped' : 'stacked';
+        this._reRenderChart();
     }
+    get stackMode() { return this._stackMode; }
+
+    _sortBy = 'aggregate';
+    @api set sortBy(v) { this._sortBy = (v === 'groupBy') ? 'groupBy' : 'aggregate'; this._maybeRefetch(); }
     get sortBy() { return this._sortBy; }
 
     _sortDirection = 'DESC';
-    @api set sortDirection(v) {
-        this._sortDirection = (v === 'ASC') ? 'ASC' : 'DESC';
-        this._maybeRefetch();
-    }
+    @api set sortDirection(v) { this._sortDirection = (v === 'ASC') ? 'ASC' : 'DESC'; this._maybeRefetch(); }
     get sortDirection() { return this._sortDirection; }
 
     _chartType = 'verticalBar';
     @api set chartType(v) {
         this._chartType = (v && VALID_CHART_TYPES.has(String(v))) ? String(v) : 'verticalBar';
-        // Re-render the chart in place if data is already loaded — no new fetch needed.
         this._reRenderChart();
     }
     get chartType() { return this._chartType; }
+
+    _maxGroups;
+    @api set maxGroups(v) {
+        const n = parseInt(v, 10);
+        this._maxGroups = (!isNaN(n) && n > 0) ? Math.min(n, 100) : null;
+        this._maybeRefetch();
+    }
+    get maxGroups() { return this._maxGroups; }
+
+    _showLegend = null;
+    @api set showLegend(v) {
+        this._showLegend = (v === null || v === undefined) ? null : (v === true || v === 'true');
+        this._reRenderChart();
+    }
+    get showLegend() { return this._showLegend; }
+
+    _chartHeight = 300;
+    @api set chartHeight(v) {
+        const n = parseInt(v, 10);
+        this._chartHeight = (!isNaN(n) && n > 0) ? Math.max(100, Math.min(1000, n)) : 300;
+        this._reRenderChart();
+    }
+    get chartHeight() { return this._chartHeight; }
 
     _rawFilters;
     @api set filters(v) { this._rawFilters = v; this._maybeRefetch(); }
     get  filters() { return this._rawFilters; }
 
-    // Internal reactive state
     _state              = STATE.UNCONFIGURED;
     _rows               = [];
     _errorMessage       = '';
     _sourceValue        = null;
-    _recordData         = null;   // stored for placeholder resolution in filters
+    _recordData         = null;
     _fetchGeneration    = 0;
     _chart              = null;
     _chartJsInitialized = false;
-    // Guards renderedCallback so we only call Chart.js once per data fetch generation.
     _lastRenderedGeneration = -1;
 
-    // ---------- Source field resolution via @wire(getRecord) ----------
+    // ---------- Source field resolution ----------
 
     get _sourceFieldRef() {
         return (this.objectApiName && this._sourceFieldProp)
@@ -108,12 +139,8 @@ export default class DataCloudChart extends LightningElement {
 
     get _sourceFieldRefArray() {
         const refs = this._sourceFieldRef ? [this._sourceFieldRef] : [];
-        // Also pull in any fields referenced by {placeholder} in the filters DSL
-        // so getRecord fetches them in the same wire call for placeholder resolution.
         for (const fieldName of this._extractPlaceholderFields()) {
-            if (this.objectApiName) {
-                refs.push(`${this.objectApiName}.${fieldName}`);
-            }
+            if (this.objectApiName) refs.push(`${this.objectApiName}.${fieldName}`);
         }
         return refs;
     }
@@ -126,12 +153,10 @@ export default class DataCloudChart extends LightningElement {
             return;
         }
         if (!data) return;
-
         this._recordData = data;
         const ref = this._sourceFieldRef;
         const val = ref ? getFieldValue(data, ref) : null;
         this._sourceValue = (val !== null && val !== undefined) ? String(val) : null;
-
         if (!this._sourceValue) {
             this._state = STATE.EMPTY;
         } else {
@@ -146,8 +171,7 @@ export default class DataCloudChart extends LightningElement {
             loadScript(this, chartJs)
                 .then(() => {
                     this._chartJsInitialized = true;
-                    // If data arrived before Chart.js finished loading, render now.
-                    if (this._state === STATE.HAS_DATA && this._rows.length > 0) {
+                    if (this._state === STATE.HAS_DATA && this._rows.length > 0 && !this.isKpiMode) {
                         this._renderChart();
                     }
                 })
@@ -173,10 +197,11 @@ export default class DataCloudChart extends LightningElement {
     // ---------- Configuration / fetch ----------
 
     _isConfigured() {
+        const isKpi = this._chartType === 'kpi';
         return !!(
             this._targetObject &&
             this._targetField &&
-            this._groupByField &&
+            (isKpi || this._groupByField) &&
             this._aggregateFunction &&
             (this._aggregateFunction === 'COUNT' || this._aggregateField) &&
             this._sourceValue
@@ -184,9 +209,7 @@ export default class DataCloudChart extends LightningElement {
     }
 
     _maybeRefetch() {
-        if (this._isConfigured()) {
-            this._fetchData();
-        }
+        if (this._isConfigured()) this._fetchData();
     }
 
     async _fetchData() {
@@ -194,12 +217,16 @@ export default class DataCloudChart extends LightningElement {
         const targetField       = this._targetField       ? String(this._targetField)       : null;
         const sourceValue       = this._sourceValue       ? String(this._sourceValue)       : null;
         const groupByField      = this._groupByField      ? String(this._groupByField)      : null;
+        const groupByTrunc      = this._groupByTrunc      ? String(this._groupByTrunc)      : null;
         const aggregateFunction = this._aggregateFunction ? String(this._aggregateFunction) : null;
         const aggregateField    = this._aggregateField    ? String(this._aggregateField)    : null;
+        const stackByField      = this._stackByField      ? String(this._stackByField)      : null;
         const sortBy            = this._sortBy            ? String(this._sortBy)            : 'aggregate';
         const sortDirection     = this._sortDirection     ? String(this._sortDirection)     : 'DESC';
+        const chartType         = this._chartType         ? String(this._chartType)         : null;
+        const maxGroupsVal      = this._maxGroups         ? this._maxGroups                 : null;
 
-        if (!(targetObject && targetField && groupByField && aggregateFunction && sourceValue)) {
+        if (!(targetObject && targetField && aggregateFunction && sourceValue)) {
             this._state = STATE.UNCONFIGURED;
             return;
         }
@@ -212,25 +239,23 @@ export default class DataCloudChart extends LightningElement {
         try {
             const json = await fetchChartDataJson({
                 paramsJson: JSON.stringify({
-                    targetObject,
-                    targetField,
-                    sourceValue,
-                    groupByField,
-                    aggregateFunction,
-                    aggregateField,
-                    sortBy,
-                    sortDirection,
+                    targetObject, targetField, sourceValue,
+                    chartType,
+                    groupByField, groupByTrunc,
+                    aggregateFunction, aggregateField,
+                    stackByField,
+                    sortBy, sortDirection,
+                    maxGroups: maxGroupsVal,
                     filters: parsedFilters
                 })
             });
 
             const result = json ? JSON.parse(json) : null;
-            if (generation !== this._fetchGeneration) return; // stale, discard
+            if (generation !== this._fetchGeneration) return;
 
             if (result && result.rows && result.rows.length > 0) {
                 this._rows  = result.rows;
                 this._state = STATE.HAS_DATA;
-                // Chart is rendered in renderedCallback once the DOM updates with the canvas.
             } else {
                 this._rows  = [];
                 this._state = STATE.EMPTY;
@@ -242,33 +267,26 @@ export default class DataCloudChart extends LightningElement {
         }
     }
 
-    // renderedCallback fires after every re-render caused by a state change.
-    // We guard with _lastRenderedGeneration so Chart.js is only called once per fetch.
     renderedCallback() {
-        if (this._state !== STATE.HAS_DATA || !this._chartJsInitialized) return;
+        if (this._state !== STATE.HAS_DATA || !this._chartJsInitialized || this.isKpiMode) return;
         if (this._fetchGeneration === this._lastRenderedGeneration) return;
         this._lastRenderedGeneration = this._fetchGeneration;
         this._renderChart();
     }
 
-    // Called directly when chartType changes — doesn't touch _fetchGeneration,
-    // so renderedCallback won't duplicate it.
     _reRenderChart() {
-        if (this._state === STATE.HAS_DATA && this._chartJsInitialized && this._rows.length > 0) {
+        if (this._state === STATE.HAS_DATA && this._chartJsInitialized && this._rows.length > 0 && !this.isKpiMode) {
             this._renderChart();
         }
     }
 
-    // ---------- Filter DSL parsing ----------
+    // ---------- Filter DSL ----------
 
-    // Extracts {placeholder} field names from the raw filter string so they can be
-    // included in the @wire(getRecord) fields array.
     _extractPlaceholderFields() {
         if (!this._rawFilters) return [];
         const fields = [];
         const regex = /\{([^}]+)\}/g;
         let match;
-        // Using a loop is necessary with exec() to get all matches
         // eslint-disable-next-line no-cond-assign
         while ((match = regex.exec(String(this._rawFilters))) !== null) {
             fields.push(match[1]);
@@ -293,7 +311,6 @@ export default class DataCloudChart extends LightningElement {
         return result;
     }
 
-    // Replaces {FieldName} tokens with the actual field value from the wired record.
     _resolvePlaceholders(value) {
         if (!value || !this._recordData) return value;
         return value.replace(/\{([^}]+)\}/g, (_match, fieldName) => {
@@ -315,63 +332,150 @@ export default class DataCloudChart extends LightningElement {
             this._chart = null;
         }
 
-        const labels = this._rows.map(r => r.groupValue || '');
-        const data   = this._rows.map(r => {
-            const v = r.aggValue;
-            return (typeof v === 'number') ? v : (parseFloat(v) || 0);
-        });
+        const isStacked = !!this._stackByField;
+        let labels, datasets;
 
-        const { type, options } = this._resolveChartConfig();
+        if (isStacked) {
+            ({ labels, datasets } = this._buildStackedDatasets(this._rows));
+        } else {
+            labels = this._rows.map(r => this._formatGroupLabel(r.groupValue));
+            const data = this._rows.map(r => {
+                const v = r.aggValue;
+                return (typeof v === 'number') ? v : (parseFloat(v) || 0);
+            });
+            const isPieOrDonut = this._chartType === 'pie' || this._chartType === 'donut';
+            datasets = [{
+                label:           this._datasetLabel(),
+                data,
+                backgroundColor: isPieOrDonut
+                    ? CHART_COLORS.slice(0, data.length)
+                    : CHART_COLORS[0],
+                borderColor:     this._chartType === 'line' ? CHART_COLORS[0] : undefined,
+                borderWidth:     this._chartType === 'line' ? 2 : 1,
+                fill:            false
+            }];
+        }
+
+        const { type, options } = this._resolveChartConfig(isStacked);
 
         // eslint-disable-next-line no-undef
         this._chart = new Chart(canvas.getContext('2d'), {
             type,
-            data: {
-                labels,
-                datasets: [{
-                    label:           this._datasetLabel(),
-                    data,
-                    backgroundColor: this._chartType === 'pie'
-                        ? CHART_COLORS.slice(0, data.length)
-                        : CHART_COLORS[0],
-                    borderColor:     this._chartType === 'line' ? CHART_COLORS[0] : undefined,
-                    borderWidth:     this._chartType === 'line' ? 2 : 1,
-                    fill:            false
-                }]
-            },
+            data: { labels, datasets },
             options
         });
     }
 
-    _resolveChartConfig() {
+    _buildStackedDatasets(rows) {
+        const labelSet   = [];
+        const labelIndex = {};
+        const stackSet   = [];
+        const stackIndex = {};
+        const valueMap   = {};
+
+        for (const row of rows) {
+            const g = this._formatGroupLabel(row.groupValue || '');
+            const s = row.stackValue !== undefined ? String(row.stackValue || '') : '';
+            const v = typeof row.aggValue === 'number' ? row.aggValue : (parseFloat(row.aggValue) || 0);
+
+            if (!(g in labelIndex)) { labelIndex[g] = labelSet.length; labelSet.push(g); }
+            if (!(s in stackIndex)) { stackIndex[s] = stackSet.length; stackSet.push(s); }
+            if (!valueMap[g]) valueMap[g] = {};
+            valueMap[g][s] = (valueMap[g][s] || 0) + v;
+        }
+
+        const datasets = stackSet.map((stackVal, i) => ({
+            label:           stackVal || '(blank)',
+            data:            labelSet.map(g => (valueMap[g] && valueMap[g][stackVal]) || 0),
+            backgroundColor: CHART_COLORS[i % CHART_COLORS.length]
+        }));
+
+        return { labels: labelSet, datasets };
+    }
+
+    _formatGroupLabel(value) {
+        if (!this._groupByTrunc || value === null || value === undefined) return String(value || '');
+        const num = parseInt(value, 10);
+        switch (this._groupByTrunc) {
+            case 'year':    return String(value);
+            case 'quarter': return `Q${num}`;
+            case 'month':   return (!isNaN(num) && num >= 1 && num <= 12) ? MONTH_LABELS[num - 1] : String(value);
+            case 'week':    return `Wk ${num}`;
+            case 'day':     return String(value);
+            default:        return String(value);
+        }
+    }
+
+    _resolveChartConfig(isStacked = false) {
+        const legendDisplay = this._effectiveLegendDisplay;
+        const isHorizontal  = this._chartType === 'horizontalBar';
         const base = {
             responsive:          true,
             maintainAspectRatio: false,
-            plugins: {
-                legend: { display: this._chartType === 'pie' }
-            }
+            plugins: { legend: { display: legendDisplay } }
         };
+
+        if (isStacked) {
+            const axisOpts   = isHorizontal ? { indexAxis: 'y' } : {};
+            const stackOpts  = this._stackMode !== 'grouped'
+                ? { scales: { x: { stacked: true }, y: { stacked: true } } }
+                : {};
+            return { type: 'bar', options: { ...base, ...axisOpts, ...stackOpts } };
+        }
+
         switch (this._chartType) {
-            case 'horizontalBar': return { type: 'bar',  options: { ...base, indexAxis: 'y' } };
-            case 'pie':           return { type: 'pie',  options: base };
-            case 'line':          return { type: 'line', options: base };
-            default:              return { type: 'bar',  options: base }; // verticalBar
+            case 'horizontalBar': return { type: 'bar',      options: { ...base, indexAxis: 'y' } };
+            case 'pie':           return { type: 'pie',       options: base };
+            case 'donut':         return { type: 'doughnut',  options: { ...base, cutout: '60%' } };
+            case 'line':          return { type: 'line',      options: base };
+            default:              return { type: 'bar',       options: base };
         }
     }
 
     _datasetLabel() {
         const fn    = this._aggregateFunction || '';
-        const field = this._aggregateField    || this._groupByField || '';
-        return fn === 'COUNT'
-            ? `Count of ${this._groupByField || ''}`
-            : `${fn}(${field})`;
+        const field = this._aggregateField || this._groupByField || '';
+        return fn === 'COUNT' ? `Count of ${this._groupByField || 'records'}` : `${fn}(${field})`;
     }
+
+    // ---------- Getters ----------
+
+    get isKpiMode() { return this._chartType === 'kpi'; }
+
+    get chartContainerStyle() {
+        const h = (this._chartHeight && this._chartHeight > 0) ? this._chartHeight : 300;
+        return `height: ${h}px;`;
+    }
+
+    get kpiValue() {
+        if (!this._rows || !this._rows.length) return '—';
+        const val = this._rows[0].aggValue;
+        if (val === null || val === undefined) return '—';
+        const num = typeof val === 'number' ? val : parseFloat(val);
+        if (isNaN(num)) return String(val);
+        if (Math.abs(num) >= 1e9) return `${(num / 1e9).toFixed(1)}B`;
+        if (Math.abs(num) >= 1e6) return `${(num / 1e6).toFixed(1)}M`;
+        if (Math.abs(num) >= 1e3) return `${(num / 1e3).toFixed(1)}K`;
+        return Number.isInteger(num) ? String(num) : num.toFixed(2);
+    }
+
+    get kpiLabel() { return this._datasetLabel(); }
+
+    get _effectiveLegendDisplay() {
+        if (this._showLegend !== null && this._showLegend !== undefined) return this._showLegend;
+        return this._chartType === 'pie' || this._chartType === 'donut' || !!this._stackByField;
+    }
+
+    get isUnconfigured() { return this._state === STATE.UNCONFIGURED; }
+    get isLoading()      { return this._state === STATE.LOADING; }
+    get isError()        { return this._state === STATE.ERROR; }
+    get isEmpty()        { return this._state === STATE.EMPTY; }
+    get hasData()        { return this._state === STATE.HAS_DATA; }
+    get cardTitle()      { return this.componentTitle || 'Chart'; }
 
     // ---------- Error handling ----------
 
-    handleRetry() {
-        this._fetchData();
-    }
+    handleRetry() { this._fetchData(); }
 
     _extractErrorMessage(err) {
         if (!err) return 'An unexpected error occurred.';
@@ -381,9 +485,7 @@ export default class DataCloudChart extends LightningElement {
     }
 
     _isGenericPlatformError(err) {
-        const msg = (err && err.body && err.body.message)
-            ? err.body.message
-            : (err && err.message) || '';
+        const msg = (err && err.body && err.body.message) ? err.body.message : (err && err.message) || '';
         return /internal server error|UNKNOWN_EXCEPTION|Error ID/i.test(msg);
     }
 
@@ -399,14 +501,4 @@ export default class DataCloudChart extends LightningElement {
         }
         return this._extractErrorMessage(err);
     }
-
-    // ---------- State getters ----------
-
-    get isUnconfigured() { return this._state === STATE.UNCONFIGURED; }
-    get isLoading()      { return this._state === STATE.LOADING; }
-    get isError()        { return this._state === STATE.ERROR; }
-    get isEmpty()        { return this._state === STATE.EMPTY; }
-    get hasData()        { return this._state === STATE.HAS_DATA; }
-
-    get cardTitle() { return this.componentTitle || 'Chart'; }
 }

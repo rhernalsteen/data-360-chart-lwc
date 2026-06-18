@@ -10,12 +10,14 @@ public without sharing class DataCloudChartController {
     private static final Pattern API_NAME_PATTERN = Pattern.compile(
         '(?i)^[A-Za-z][A-Za-z0-9_]*(__(c|dlm|dll|dlo|e|b|mdt|share|history))?$'
     );
-    private static final Set<String> VALID_DIRECTIONS  = new Set<String>{ 'ASC', 'DESC' };
-    private static final Set<String> VALID_AGGREGATES  = new Set<String>{ 'SUM', 'COUNT', 'AVG', 'MIN', 'MAX' };
-    private static final Set<String> ALLOWED_OPERATORS = new Set<String>{
+    private static final Set<String> VALID_DIRECTIONS      = new Set<String>{ 'ASC', 'DESC' };
+    private static final Set<String> VALID_AGGREGATES      = new Set<String>{ 'SUM', 'COUNT', 'AVG', 'MIN', 'MAX' };
+    private static final Set<String> ALLOWED_OPERATORS     = new Set<String>{
         'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'like', 'in', 'notnull', 'isnull'
     };
-    private static final Integer MAX_GROUPS = 100;
+    private static final Set<String> VALID_DATE_TRUNCATIONS = new Set<String>{ 'day', 'week', 'month', 'quarter', 'year' };
+    private static final Integer MAX_GROUPS     = 100;  // hard cap
+    private static final Integer DEFAULT_GROUPS = 25;   // default limit
 
     // Filter condition sent from the LWC after client-side DSL parsing and
     // placeholder resolution. Each field and operator are server-validated;
@@ -35,6 +37,10 @@ public without sharing class DataCloudChartController {
         @AuraEnabled public String              aggregateField;    // blank OK when COUNT
         @AuraEnabled public String              sortBy;            // 'aggregate' | 'groupBy'
         @AuraEnabled public String              sortDirection;     // ASC | DESC
+        @AuraEnabled public String              chartType;         // 'kpi' skips GROUP BY
+        @AuraEnabled public String              groupByTrunc;      // day|week|month|quarter|year
+        @AuraEnabled public String              stackByField;      // optional second GROUP BY for stacked bar
+        @AuraEnabled public Integer             maxGroups;         // 1–100, default 25
         @AuraEnabled public List<FilterCondition> filters;
     }
 
@@ -107,11 +113,15 @@ public without sharing class DataCloudChartController {
             if (String.isNotBlank(params.aggregateFunction)) {
                 params.aggregateFunction = params.aggregateFunction.trim().toUpperCase();
             }
+            if (String.isNotBlank(params.groupByTrunc)) { params.groupByTrunc = params.groupByTrunc.trim().toLowerCase(); }
+            if (String.isNotBlank(params.stackByField)) { params.stackByField = params.stackByField.trim(); }
+            if (String.isNotBlank(params.chartType))    { params.chartType    = params.chartType.trim().toLowerCase(); }
+            Boolean isKpi = 'kpi'.equals(params.chartType);
 
             if (String.isBlank(params.targetObject) || String.isBlank(params.targetField)) {
                 throwSafe('Target object and target field are required.');
             }
-            if (String.isBlank(params.groupByField)) {
+            if (!isKpi && String.isBlank(params.groupByField)) {
                 throwSafe('Group By field is required.');
             }
             if (String.isBlank(params.aggregateFunction) || !VALID_AGGREGATES.contains(params.aggregateFunction)) {
@@ -120,14 +130,18 @@ public without sharing class DataCloudChartController {
             if (params.aggregateFunction != 'COUNT' && String.isBlank(params.aggregateField)) {
                 throwSafe('Aggregate field is required for ' + params.aggregateFunction + '.');
             }
+            if (String.isNotBlank(params.groupByTrunc) && !VALID_DATE_TRUNCATIONS.contains(params.groupByTrunc)) {
+                throwSafe('Invalid Group By Truncation: ' + params.groupByTrunc + '. Must be one of: day, week, month, quarter, year.');
+            }
 
             // Layer 1 — regex injection guard
             assertValidApiName(params.targetObject, 'target object');
             assertValidApiName(params.targetField, 'target field');
-            assertValidApiName(params.groupByField, 'group-by field');
+            if (!isKpi) { assertValidApiName(params.groupByField, 'group-by field'); }
             if (String.isNotBlank(params.aggregateField)) {
                 assertValidApiName(params.aggregateField, 'aggregate field');
             }
+            if (String.isNotBlank(params.stackByField)) { assertValidApiName(params.stackByField, 'stack-by field'); }
             if (params.filters != null) {
                 for (FilterCondition fc : params.filters) {
                     if (fc == null) continue;
@@ -141,6 +155,7 @@ public without sharing class DataCloudChartController {
             phase = 'DESCRIBE';
             // Layer 2 — Schema describe (best-effort)
             Map<String, Schema.SObjectField> fieldMap = null;
+            Schema.DisplayType groupByFieldType = null;
             try {
                 List<Schema.DescribeSObjectResult> descs =
                     Schema.describeSObjects(new List<String>{ params.targetObject });
@@ -158,8 +173,14 @@ public without sharing class DataCloudChartController {
                 if (fieldMap.get(params.targetField.toLowerCase()) == null) {
                     throwSafe('Invalid target field: ' + params.targetField);
                 }
-                if (fieldMap.get(params.groupByField.toLowerCase()) == null) {
-                    throwSafe('Invalid group-by field: ' + params.groupByField);
+                if (!isKpi && fieldMap != null) {
+                    Schema.SObjectField groupSField = fieldMap.get(params.groupByField.toLowerCase());
+                    if (groupSField == null) { throwSafe('Invalid group-by field: ' + params.groupByField); }
+                    groupByFieldType = groupSField.getDescribe().getType();
+                    // also validate stackByField if present
+                    if (String.isNotBlank(params.stackByField) && fieldMap.get(params.stackByField.toLowerCase()) == null) {
+                        throwSafe('Invalid stack-by field: ' + params.stackByField);
+                    }
                 }
                 if (String.isNotBlank(params.aggregateField)
                         && fieldMap.get(params.aggregateField.toLowerCase()) == null) {
@@ -181,21 +202,20 @@ public without sharing class DataCloudChartController {
                 : 'DESC';
             String dir = VALID_DIRECTIONS.contains(rawDir) ? rawDir : 'DESC';
 
-            // COUNT() with no argument avoids "Grouped field should not be aggregated"
-            // when the user leaves aggregateField blank (the common case for COUNT).
-            // COUNT(fieldName) where fieldName == groupByField is rejected by SOQL.
-            // No alias — Data Cloud SOQL rejects ORDER BY on an alias; ORDER BY repeats
-            // the full expression instead.
-            // COUNT(Id) avoids "Grouped field should not be aggregated" (can't count the
-            // GROUP BY field) while being valid in both standard and Data Cloud SOQL.
-            // COUNT() with no argument is rejected by standard SOQL in a mixed SELECT.
+            // Determine group expression (plain field or date function)
+            String groupByExpr   = isKpi ? null : buildGroupByExpression(params.groupByField, params.groupByTrunc, groupByFieldType);
+            // When a date function is applied, alias it as 'groupBucket' so ar.get() is reliable
+            Boolean isFunctionExpr = groupByExpr != null && !groupByExpr.equalsIgnoreCase(params.groupByField);
+            String groupReadKey    = isFunctionExpr ? 'groupBucket' : (isKpi ? null : params.groupByField);
+            String selectGroupExpr = isFunctionExpr ? (groupByExpr + ' groupBucket') : (isKpi ? null : params.groupByField);
+
+            // COUNT(Id) avoids "Grouped field should not be aggregated"; COUNT() is invalid in mixed SELECT.
+            // ORDER BY repeats the full expression — Data Cloud SOQL rejects ORDER BY on an alias.
             String aggFn = (params.aggregateFunction == 'COUNT')
                 ? 'COUNT(Id)'
                 : params.aggregateFunction + '(' + params.aggregateField + ')';
 
-            // Build WHERE clause. sourceValue is a bind variable; filter values
-            // are escaped via String.escapeSingleQuotes() — Data Cloud objects do
-            // not support Database.queryWithBinds with SYSTEM_MODE (existing gotcha).
+            // WHERE clause
             String whereClause = params.targetField + ' = :sourceValue';
             if (params.filters != null && !params.filters.isEmpty()) {
                 for (FilterCondition fc : params.filters) {
@@ -204,21 +224,40 @@ public without sharing class DataCloudChartController {
                 }
             }
 
-            // sortBy: 'groupBy' orders alphabetically by the group label;
-            // 'aggregate' (default) orders by the aggregate value.
-            // Data Cloud requires the full expression in ORDER BY — aliases not supported.
-            Boolean sortByGroup = 'groupBy'.equalsIgnoreCase(params.sortBy);
-            String orderByExpr  = sortByGroup ? params.groupByField : aggFn;
+            // Clamp maxGroups: default 25, hard cap 100
+            Integer maxGroups = DEFAULT_GROUPS;
+            if (params.maxGroups != null && params.maxGroups > 0) {
+                maxGroups = Math.min(params.maxGroups, MAX_GROUPS);
+            }
 
-            String query = 'SELECT ' + params.groupByField + ', ' + aggFn
-                         + ' FROM '    + params.targetObject
-                         + ' WHERE '   + whereClause
-                         + ' GROUP BY ' + params.groupByField
-                         + ' ORDER BY ' + orderByExpr + ' ' + dir
-                         + ' LIMIT :maxGroups';
+            String query;
+            if (isKpi) {
+                // Scalar aggregate — no GROUP BY, always returns one row.
+                // LIMIT is not allowed on non-grouped aggregate queries in standard SOQL.
+                query = 'SELECT ' + aggFn
+                      + ' FROM '  + params.targetObject
+                      + ' WHERE ' + whereClause;
+            } else {
+                Boolean sortByGroup = 'groupBy'.equalsIgnoreCase(params.sortBy);
+                String orderByExpr  = sortByGroup ? groupByExpr : aggFn;
+
+                // Build SELECT: group expression (possibly with alias) + aggregate + optional stack field
+                String selectPart  = selectGroupExpr + ', ' + aggFn;
+                String groupByPart = groupByExpr;
+                if (String.isNotBlank(params.stackByField)) {
+                    selectPart  += ', ' + params.stackByField;
+                    groupByPart += ', ' + params.stackByField;
+                }
+
+                query = 'SELECT ' + selectPart
+                      + ' FROM '    + params.targetObject
+                      + ' WHERE '   + whereClause
+                      + ' GROUP BY ' + groupByPart
+                      + ' ORDER BY ' + orderByExpr + ' ' + dir
+                      + ' LIMIT :maxGroups';
+            }
 
             String sourceValue = params.sourceValue;
-            Integer maxGroups  = MAX_GROUPS;
             soqlForDiagnostic  = query;
 
             phase = 'EXECUTE_QUERY';
@@ -231,15 +270,23 @@ public without sharing class DataCloudChartController {
             Integer idx = 0;
             for (AggregateResult ar : results) {
                 Map<String, Object> row = new Map<String, Object>();
-                Object groupVal = ar.get(params.groupByField);
-                // 'expr0' is Salesforce's auto-assigned key for the first aggregate
-                // function in AggregateResult when no alias is defined in SOQL.
-                Object aggVal   = ar.get('expr0');
-                // Defensive coercion: Data Cloud may return wrapper types;
-                // stringify the group label and ensure aggValue is numeric.
-                row.put('groupValue', groupVal != null ? String.valueOf(groupVal) : '');
-                row.put('aggValue',   aggVal   != null ? aggVal : 0);
-                row.put('_rowKey',    String.valueOf(idx));
+                if (isKpi) {
+                    row.put('groupValue', '');
+                    row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
+                } else {
+                    Object groupVal = ar.get(groupReadKey);
+                    // Defensive fallback if alias or function key differs on Data Cloud
+                    if (groupVal == null && isFunctionExpr) {
+                        groupVal = ar.get(params.groupByField);
+                    }
+                    row.put('groupValue', groupVal != null ? String.valueOf(groupVal) : '');
+                    row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
+                    if (String.isNotBlank(params.stackByField)) {
+                        Object stackVal = ar.get(params.stackByField);
+                        row.put('stackValue', stackVal != null ? String.valueOf(stackVal) : '');
+                    }
+                }
+                row.put('_rowKey', String.valueOf(idx));
                 rows.add(row);
                 idx++;
             }
@@ -263,6 +310,37 @@ public without sharing class DataCloudChartController {
             throwSafe(diag);
             return null;
         }
+    }
+
+    /**
+     * Returns the appropriate SOQL GROUP BY expression for a field.
+     * If a date truncation is specified and the field is a DATE or DATETIME type,
+     * wraps the field in the corresponding SOQL date function.
+     * Non-date fields silently ignore the truncation.
+     */
+    @TestVisible
+    private static String buildGroupByExpression(String field, String trunc, Schema.DisplayType fieldType) {
+        if (String.isBlank(trunc) || !VALID_DATE_TRUNCATIONS.contains(trunc)) {
+            return field;
+        }
+        // When fieldType is known and is NOT a date/datetime, ignore trunc silently
+        Boolean isDate     = (fieldType == Schema.DisplayType.DATE);
+        Boolean isDatetime = (fieldType == Schema.DisplayType.DATETIME);
+        if (fieldType != null && !isDate && !isDatetime) {
+            return field;
+        }
+        // Apply the appropriate SOQL date function
+        switch on trunc {
+            when 'year'    { return 'CALENDAR_YEAR('    + field + ')'; }
+            when 'quarter' { return 'CALENDAR_QUARTER(' + field + ')'; }
+            when 'month'   { return 'CALENDAR_MONTH('   + field + ')'; }
+            when 'week'    { return 'WEEK_IN_YEAR('      + field + ')'; }
+            when 'day'     {
+                // DAY_ONLY converts DATETIME to Date; DATE fields are already day-level
+                return isDate ? field : 'DAY_ONLY(' + field + ')';
+            }
+        }
+        return field;
     }
 
     /**

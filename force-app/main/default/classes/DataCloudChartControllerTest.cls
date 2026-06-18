@@ -318,13 +318,12 @@ private class DataCloudChartControllerTest {
     }
 
     @IsTest
-    static void maxGroupsCapAt100() {
-        // Insert 5 contacts with unique departments (total now up to 5 groups + engineering + sales + marketing)
-        // We can't easily insert 101 distinct groups in a unit test, but we can verify MAX_GROUPS
-        // is enforced by confirming the query succeeds with a large set — just validate no exception.
+    static void maxGroupsDefaultIs25() {
+        // Default maxGroups is 25; 3 test groups should all return
         DataCloudChartController.ChartResult result =
             DataCloudChartController.getChartData(JSON.serialize(baseParams()));
-        System.assert(result.rows.size() <= 100, 'rows must be capped at 100');
+        System.assert(result.rows.size() <= 25, 'rows must not exceed default cap of 25');
+        System.assertEquals(3, result.rows.size(), 'All 3 department groups should be within default limit');
     }
 
     @IsTest
@@ -387,5 +386,180 @@ private class DataCloudChartControllerTest {
         } catch (AuraHandledException e) {
             System.assertNotEquals(null, e.getMessage());
         }
+    }
+
+    // ---------- buildGroupByExpression unit tests ----------
+
+    @IsTest
+    static void groupByExprPlainFieldWhenNoTrunc() {
+        String expr = DataCloudChartController.buildGroupByExpression('Department', null, null);
+        System.assertEquals('Department', expr);
+    }
+
+    @IsTest
+    static void groupByExprMonthFunctionForDatetime() {
+        String expr = DataCloudChartController.buildGroupByExpression('CreatedDate', 'month', Schema.DisplayType.DATETIME);
+        System.assertEquals('CALENDAR_MONTH(CreatedDate)', expr);
+    }
+
+    @IsTest
+    static void groupByExprYearFunctionForDate() {
+        String expr = DataCloudChartController.buildGroupByExpression('Birthdate', 'year', Schema.DisplayType.DATE);
+        System.assertEquals('CALENDAR_YEAR(Birthdate)', expr);
+    }
+
+    @IsTest
+    static void groupByExprQuarterFunction() {
+        String expr = DataCloudChartController.buildGroupByExpression('CreatedDate', 'quarter', Schema.DisplayType.DATETIME);
+        System.assertEquals('CALENDAR_QUARTER(CreatedDate)', expr);
+    }
+
+    @IsTest
+    static void groupByExprWeekFunction() {
+        String expr = DataCloudChartController.buildGroupByExpression('CreatedDate', 'week', Schema.DisplayType.DATETIME);
+        System.assertEquals('WEEK_IN_YEAR(CreatedDate)', expr);
+    }
+
+    @IsTest
+    static void groupByExprDayDatetime() {
+        String expr = DataCloudChartController.buildGroupByExpression('CreatedDate', 'day', Schema.DisplayType.DATETIME);
+        System.assertEquals('DAY_ONLY(CreatedDate)', expr);
+    }
+
+    @IsTest
+    static void groupByExprDayDateIsPlainField() {
+        // DATE fields are already day-level — no function needed
+        String expr = DataCloudChartController.buildGroupByExpression('Birthdate', 'day', Schema.DisplayType.DATE);
+        System.assertEquals('Birthdate', expr);
+    }
+
+    @IsTest
+    static void groupByExprIgnoresTruncForNonDateField() {
+        // STRING field with trunc set — silently returns plain field
+        String expr = DataCloudChartController.buildGroupByExpression('Department', 'month', Schema.DisplayType.STRING);
+        System.assertEquals('Department', expr);
+    }
+
+    // ---------- Date bucketing integration ----------
+
+    @IsTest
+    static void groupByTruncMonthSucceeds() {
+        // CreatedDate is DATETIME on Contact — CALENDAR_MONTH should apply without error
+        DataCloudChartController.QueryParams p = baseParams();
+        p.groupByField  = 'CreatedDate';
+        p.groupByTrunc  = 'month';
+        p.sortBy        = 'groupBy';
+
+        Test.startTest();
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+        Test.stopTest();
+
+        System.assertNotEquals(null, result);
+        System.assertNotEquals(null, result.rows);
+        // All 5 contacts were created in the same test run → all in one month bucket
+        System.assert(result.rows.size() >= 1, 'Expected at least one month bucket');
+    }
+
+    @IsTest
+    static void invalidGroupByTruncThrows() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.groupByTrunc = 'decade';
+        try {
+            DataCloudChartController.getChartData(JSON.serialize(p));
+            System.assert(false, 'Expected exception');
+        } catch (AuraHandledException e) {
+            System.assert(e.getMessage().containsIgnoreCase('Truncation'));
+        }
+    }
+
+    // ---------- KPI mode ----------
+
+    @IsTest
+    static void kpiModeRequiresNoGroupBy() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.chartType    = 'kpi';
+        p.groupByField = null;  // no groupBy needed
+
+        Test.startTest();
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+        Test.stopTest();
+
+        System.assertNotEquals(null, result);
+        System.assertEquals(1, result.rows.size(), 'KPI should return exactly one row');
+    }
+
+    @IsTest
+    static void kpiModeReturnsSingleAggValue() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.chartType    = 'kpi';
+        p.groupByField = null;
+
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+
+        Object aggVal = result.rows[0].get('aggValue');
+        System.assertNotEquals(null, aggVal, 'KPI aggValue should not be null');
+        // 5 contacts with chart@example.com → COUNT = 5
+        System.assertEquals(5, Integer.valueOf(String.valueOf(aggVal)));
+    }
+
+    // ---------- stackByField ----------
+
+    @IsTest
+    static void invalidStackByFieldThrows() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.stackByField = 'Bad; DROP TABLE';
+        try {
+            DataCloudChartController.getChartData(JSON.serialize(p));
+            System.assert(false, 'Expected exception');
+        } catch (AuraHandledException e) {
+            System.assert(e.getMessage().containsIgnoreCase('invalid'));
+        }
+    }
+
+    @IsTest
+    static void stackByFieldProducesStackValueInRows() {
+        // Group by Department, stack by Title (null on all test contacts → one bucket per group)
+        DataCloudChartController.QueryParams p = baseParams();
+        p.stackByField = 'Title';  // Title is null on all test contacts → one bucket per group
+
+        Test.startTest();
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+        Test.stopTest();
+
+        System.assertNotEquals(null, result);
+        System.assert(result.rows.size() > 0);
+        // Each row should have a stackValue key
+        System.assert(result.rows[0].containsKey('stackValue'), 'stackValue key should be present');
+    }
+
+    // ---------- maxGroups ----------
+
+    @IsTest
+    static void maxGroupsRespected() {
+        // Limit to 1 group from 3 available — only 1 row should return
+        DataCloudChartController.QueryParams p = baseParams();
+        p.maxGroups = 1;
+
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+
+        System.assertEquals(1, result.rows.size(), 'maxGroups = 1 should return only 1 row');
+    }
+
+    @IsTest
+    static void maxGroupsClampedToHardCap() {
+        // maxGroups > 100 should be silently clamped to 100 (no error)
+        DataCloudChartController.QueryParams p = baseParams();
+        p.maxGroups = 500;
+
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(p));
+
+        System.assertNotEquals(null, result);
+        System.assert(result.rows.size() <= 100);
     }
 }

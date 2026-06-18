@@ -55,9 +55,17 @@
             </template>
 
             <template lwc:elseif={hasData}>
-                <div class="dc-chart-container">
-                    <canvas class="dc-canvas"></canvas>
-                </div>
+                <template lwc:if={isKpiMode}>
+                    <div class="dc-kpi-container">
+                        <div class="dc-kpi-value">{kpiValue}</div>
+                        <div class="dc-kpi-label">{kpiLabel}</div>
+                    </div>
+                </template>
+                <template lwc:else>
+                    <div class="dc-chart-container" style={chartContainerStyle}>
+                        <canvas class="dc-canvas"></canvas>
+                    </div>
+                </template>
             </template>
 
         </div>
