@@ -1,0 +1,268 @@
+================================================================================
+DATA 360 CHART — POST-INSTALL SETUP GUIDE
+================================================================================
+
+For Salesforce consultants and admins configuring the Data 360 Chart component
+after package installation. Follow these steps in order — the component will not
+render without the Chart.js static resource described in Step 1.
+
+
+================================================================================
+STEP 1 — UPLOAD THE CHART.JS STATIC RESOURCE (REQUIRED)
+================================================================================
+
+The Chart.js library is NOT included in the package and must be uploaded manually
+to each org. This is a one-time step per org.
+
+1. Download the Chart.js UMD bundle from:
+   https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.js
+   (version 3.x or higher, UMD build)
+
+2. In Salesforce Setup, go to Static Resources
+
+3. Click New
+
+4. Fill in the fields:
+   - Name:          ChartJS   <-- must be exactly this, case-sensitive
+   - File:          upload the .js file you downloaded
+   - Cache Control: Public
+
+5. Click Save
+
+NOTE: If the name is wrong or the resource is missing, the component will show
+a toast error ("Chart.js failed to load") when added to a page.
+
+
+================================================================================
+STEP 2 — ADD THE COMPONENT TO A RECORD PAGE
+================================================================================
+
+1. Navigate to any record page where you want the chart (e.g., an Account record)
+
+2. Click the gear icon > Edit Page to open Lightning App Builder
+
+3. Find "Data 360 Chart" in the component panel (search "Data 360" if needed)
+
+4. Drag it onto the page layout
+
+5. Configure the properties in the right panel (see Step 3)
+
+6. Click Save, then Activate the page if prompted
+
+
+================================================================================
+STEP 3 — CONFIGURE THE COMPONENT
+================================================================================
+
+Every property is set in Lightning App Builder when the component is selected.
+The first five properties below are required for the component to render data.
+
+
+REQUIRED PROPERTIES
+-------------------
+
+  Target Object API Name    API name of the Data Cloud DLO or DMO to query
+                            Example: ssot__SalesOrder__dlm
+
+  Source Field (CRM Record) Field on this CRM record that links to Data Cloud
+                            Example: Id
+
+  Target Field (Data Cloud) Field on the Data Cloud object matching source value
+                            Example: ssot__AccountId__c
+
+  Group By Field            Field to group results by (chart labels / pie slices)
+                            Example: ssot__Stage__c
+
+  Aggregate Function        SUM, COUNT, AVG, MIN, or MAX
+                            Example: COUNT
+
+NOTE: Aggregate Field is also required for SUM, AVG, MIN, and MAX.
+      Leave it blank when using COUNT.
+
+
+CHART TYPES
+-----------
+
+  verticalBar    Vertical bar chart (default)
+  horizontalBar  Horizontal bar chart — good for long label names
+  pie            Pie chart
+  donut          Donut chart
+  line           Line chart
+  kpi            Single large metric number — Group By Field not required
+
+
+OPTIONAL PROPERTIES
+-------------------
+
+  Card Title              Header label on the card. Default: "Chart"
+
+  Aggregate Field         Required for SUM/AVG/MIN/MAX; leave blank for COUNT
+
+  Sort By                 "aggregate" sorts by value (default)
+                          "groupBy" sorts alphabetically by the group label
+
+  Sort Direction          DESC puts the highest values first (default)
+                          ASC reverses the order
+
+  Group By Truncation     Date/datetime fields only. Buckets values by:
+                          day, week, month, quarter, or year
+                          Month labels display as Jan/Feb/Mar, quarters as Q1/Q2,
+                          weeks as Wk 1/Wk 2, etc.
+                          Ignored if the Group By Field is not a date or datetime.
+
+  Stack By Field          A second GROUP BY field that adds color-coded stacking
+                          to bar charts. Each distinct value becomes a segment.
+
+  Stack Mode              stacked: segments stacked on top of each other (default)
+                          grouped: segments placed side by side
+
+  Max Groups              Maximum groups returned, 1 to 100. Default: 25
+                          Increase only when you need to show many distinct values.
+
+  Show Legend             Explicitly show or hide the chart legend.
+                          Auto-on for pie, donut, and stacked charts.
+                          Auto-off for bar and line charts.
+
+  Chart Height (px)       Canvas height in pixels, 100 to 1000. Default: 300
+
+  Filters                 Extra WHERE conditions — see Filters section below
+
+
+================================================================================
+STEP 4 — COMMON CONFIGURATIONS
+================================================================================
+
+COUNT OF ORDERS BY STAGE (vertical bar)
+  Target Object API Name:    ssot__SalesOrder__dlm
+  Source Field (CRM Record): Id
+  Target Field (Data Cloud): ssot__AccountId__c
+  Group By Field:            ssot__Stage__c
+  Aggregate Function:        COUNT
+  Chart Type:                verticalBar
+
+--------------------------------------------------------------------------------
+
+TOTAL REVENUE BY PRODUCT CATEGORY (horizontal bar)
+  Target Object API Name:    ssot__SalesOrder__dlm
+  Source Field (CRM Record): Id
+  Target Field (Data Cloud): ssot__AccountId__c
+  Group By Field:            ssot__ProductCategory__c
+  Aggregate Function:        SUM
+  Aggregate Field:           ssot__TotalAmount__c
+  Sort By:                   aggregate
+  Sort Direction:            DESC
+  Chart Type:                horizontalBar
+
+--------------------------------------------------------------------------------
+
+TOTAL LIFETIME SPEND KPI (single metric)
+  Target Object API Name:    ssot__SalesOrder__dlm
+  Source Field (CRM Record): Id
+  Target Field (Data Cloud): ssot__AccountId__c
+  Aggregate Function:        SUM
+  Aggregate Field:           ssot__TotalAmount__c
+  Chart Type:                kpi
+
+  NOTE: Group By Field is not required in KPI mode.
+
+--------------------------------------------------------------------------------
+
+ORDER TREND BY MONTH (line chart with date bucketing)
+  Target Object API Name:    ssot__SalesOrder__dlm
+  Source Field (CRM Record): Id
+  Target Field (Data Cloud): ssot__AccountId__c
+  Group By Field:            ssot__OrderDate__c  (must be a datetime field)
+  Group By Truncation:       month
+  Aggregate Function:        COUNT
+  Sort By:                   groupBy
+  Sort Direction:            ASC
+  Chart Type:                line
+
+--------------------------------------------------------------------------------
+
+REVENUE BY STAGE STACKED BY REGION
+  Target Object API Name:    ssot__SalesOrder__dlm
+  Source Field (CRM Record): Id
+  Target Field (Data Cloud): ssot__AccountId__c
+  Group By Field:            ssot__Stage__c
+  Aggregate Function:        SUM
+  Aggregate Field:           ssot__TotalAmount__c
+  Stack By Field:            ssot__Region__c
+  Stack Mode:                stacked
+  Chart Type:                verticalBar
+
+
+================================================================================
+FILTERS (ADVANCED)
+================================================================================
+
+The Filters property lets you add extra WHERE conditions without writing Apex.
+
+FORMAT:   fieldApiName|operator|value
+          Comma-separate multiple conditions.
+
+OPERATORS: eq, neq, gt, gte, lt, lte, like, in, notnull, isnull
+
+EXAMPLES:
+  ssot__Stage__c|eq|Closed Won
+  ssot__TotalAmount__c|gte|10000
+  ssot__Stage__c|in|Closed Won;Prospecting
+  ssot__CloseDate__c|gte|{CloseDate}
+
+For "in": separate multiple values with semicolons.
+For "notnull" and "isnull": no value needed.
+
+{FieldName} placeholders are replaced at runtime with the current record's
+field value. For example, {CloseDate} pulls the CloseDate from the record
+the component is placed on.
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+"Chart.js failed to load" toast appears
+  The ChartJS static resource is missing or misnamed.
+  Repeat Step 1 and confirm the name is exactly "ChartJS" (capital C, J, S).
+
+Component shows "Component Not Configured"
+  One or more required properties are blank. Confirm that Target Object,
+  Source Field, Target Field, Group By Field (not required for KPI), and
+  Aggregate Function are all set.
+
+Component shows "No data to display"
+  The query returned zero rows. Common causes:
+  - The Source Field / Target Field pairing doesn't match any Data Cloud
+    records for this CRM record
+  - A Filter condition is too restrictive
+  - The record genuinely has no related Data Cloud data
+
+Chart renders but values look wrong
+  - Confirm the Aggregate Field is a numeric field on the Data Cloud object
+  - For COUNT, leave Aggregate Field blank
+  - Check Sort Direction — DESC puts the largest group first
+
+"Something went wrong" with an unmapped field message
+  A field in Group By, Aggregate Field, or Stack By is defined on the object
+  but not mapped in the Data Cloud data model. Go to:
+  Setup > Data Cloud > Data Model
+  Find the object and confirm the field is mapped. Unmapped fields cannot
+  be queried.
+
+Date bucketing is ignored
+  Group By Truncation only applies to date and datetime fields. If the Group
+  By Field is a string, picklist, or other non-date type, the truncation
+  setting is silently ignored and the raw field value is used.
+
+
+================================================================================
+COMPANION COMPONENT
+================================================================================
+
+This component pairs with Data 360 Related List, which displays Data Cloud
+records as a sortable, filterable table on any CRM record page.
+
+Package install URL:
+  https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000K9fh
+
+================================================================================
