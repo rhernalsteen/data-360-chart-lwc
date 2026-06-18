@@ -47,6 +47,8 @@ public without sharing class DataCloudChartController {
     public class ChartResult {
         // Each row: { groupValue: String, aggValue: Decimal/Integer, _rowKey: String }
         @AuraEnabled public List<Map<String, Object>> rows;
+        @AuraEnabled public String groupByFieldLabel;
+        @AuraEnabled public String aggregateFieldLabel;
     }
 
     /**
@@ -156,6 +158,8 @@ public without sharing class DataCloudChartController {
             // Layer 2 — Schema describe (best-effort)
             Map<String, Schema.SObjectField> fieldMap = null;
             Schema.DisplayType groupByFieldType = null;
+            String groupByFieldLabel   = null;
+            String aggregateFieldLabel = null;
             try {
                 List<Schema.DescribeSObjectResult> descs =
                     Schema.describeSObjects(new List<String>{ params.targetObject });
@@ -176,15 +180,18 @@ public without sharing class DataCloudChartController {
                 if (!isKpi && fieldMap != null) {
                     Schema.SObjectField groupSField = fieldMap.get(params.groupByField.toLowerCase());
                     if (groupSField == null) { throwSafe('Invalid group-by field: ' + params.groupByField); }
-                    groupByFieldType = groupSField.getDescribe().getType();
+                    Schema.DescribeFieldResult groupDescribe = groupSField.getDescribe();
+                    groupByFieldType  = groupDescribe.getType();
+                    groupByFieldLabel = groupDescribe.getLabel();
                     // also validate stackByField if present
                     if (String.isNotBlank(params.stackByField) && fieldMap.get(params.stackByField.toLowerCase()) == null) {
                         throwSafe('Invalid stack-by field: ' + params.stackByField);
                     }
                 }
-                if (String.isNotBlank(params.aggregateField)
-                        && fieldMap.get(params.aggregateField.toLowerCase()) == null) {
-                    throwSafe('Invalid aggregate field: ' + params.aggregateField);
+                if (String.isNotBlank(params.aggregateField)) {
+                    Schema.SObjectField aggSField = fieldMap.get(params.aggregateField.toLowerCase());
+                    if (aggSField == null) { throwSafe('Invalid aggregate field: ' + params.aggregateField); }
+                    aggregateFieldLabel = aggSField.getDescribe().getLabel();
                 }
                 if (params.filters != null) {
                     for (FilterCondition fc : params.filters) {
@@ -292,7 +299,9 @@ public without sharing class DataCloudChartController {
             }
 
             ChartResult result = new ChartResult();
-            result.rows = rows;
+            result.rows               = rows;
+            result.groupByFieldLabel   = groupByFieldLabel;
+            result.aggregateFieldLabel = aggregateFieldLabel;
             return result;
 
         } catch (AuraHandledException ahe) {

@@ -562,4 +562,25 @@ private class DataCloudChartControllerTest {
         System.assertNotEquals(null, result);
         System.assert(result.rows.size() <= 100);
     }
+
+    // ---------- Field labels ----------
+
+    @IsTest
+    static void resultIncludesGroupByFieldLabel() {
+        // Contact.Department label is "Department"
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(baseParams()));
+        System.assertEquals('Department', result.groupByFieldLabel,
+            'groupByFieldLabel should match the schema label for Department');
+    }
+
+    @IsTest
+    static void countResultHasNullAggregateFieldLabel() {
+        // COUNT with no aggregateField — aggregateFieldLabel should be null
+        DataCloudChartController.ChartResult result =
+            DataCloudChartController.getChartData(JSON.serialize(baseParams()));
+        System.assertEquals(null, result.aggregateFieldLabel,
+            'aggregateFieldLabel should be null for COUNT with no aggregate field');
+    }
+
 }

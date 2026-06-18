@@ -122,6 +122,8 @@ export default class DataCloudChart extends LightningElement {
     _state              = STATE.UNCONFIGURED;
     _rows               = [];
     _errorMessage       = '';
+    _groupByFieldLabel   = null;
+    _aggregateFieldLabel = null;
     _sourceValue        = null;
     _recordData         = null;
     _fetchGeneration    = 0;
@@ -233,6 +235,8 @@ export default class DataCloudChart extends LightningElement {
 
         const generation = ++this._fetchGeneration;
         this._state = STATE.LOADING;
+        this._groupByFieldLabel   = null;
+        this._aggregateFieldLabel = null;
 
         const parsedFilters = this._parseFilters(this._rawFilters);
 
@@ -254,7 +258,9 @@ export default class DataCloudChart extends LightningElement {
             if (generation !== this._fetchGeneration) return;
 
             if (result && result.rows && result.rows.length > 0) {
-                this._rows  = result.rows;
+                this._rows               = result.rows;
+                this._groupByFieldLabel   = result.groupByFieldLabel   || null;
+                this._aggregateFieldLabel = result.aggregateFieldLabel || null;
                 this._state = STATE.HAS_DATA;
             } else {
                 this._rows  = [];
@@ -433,9 +439,14 @@ export default class DataCloudChart extends LightningElement {
     }
 
     _datasetLabel() {
-        const fn    = this._aggregateFunction || '';
-        const field = this._aggregateField || this._groupByField || '';
-        return fn === 'COUNT' ? `Count of ${this._groupByField || 'records'}` : `${fn}(${field})`;
+        const fn = this._aggregateFunction || '';
+        if (fn === 'COUNT') {
+            const groupLabel = this._groupByFieldLabel || this._groupByField || 'records';
+            return `Count of ${groupLabel}`;
+        }
+        const fnLabel    = fn.charAt(0).toUpperCase() + fn.slice(1).toLowerCase();
+        const fieldLabel = this._aggregateFieldLabel || this._aggregateField || 'Value';
+        return `${fnLabel} of ${fieldLabel}`;
     }
 
     // ---------- Getters ----------
