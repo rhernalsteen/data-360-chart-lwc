@@ -181,17 +181,16 @@ public without sharing class DataCloudChartController {
                 : 'DESC';
             String dir = VALID_DIRECTIONS.contains(rawDir) ? rawDir : 'DESC';
 
-            // For COUNT with no explicit aggregateField, count on the groupByField
-            // (it's always non-null since it's the GROUP BY key).
-            String countField = String.isNotBlank(params.aggregateField)
-                ? params.aggregateField
-                : params.groupByField;
-            // No alias on the aggregate function — Data Cloud SOQL rejects ORDER BY on an
-            // alias (e.g. "No such column 'aggValue'"). Standard SOQL auto-assigns 'expr0'
-            // as the key in AggregateResult when no alias is provided; Data Cloud does too.
-            // ORDER BY uses the full expression instead of the alias for the same reason.
-            String aggFn    = (params.aggregateFunction == 'COUNT')
-                ? 'COUNT(' + countField + ')'
+            // COUNT() with no argument avoids "Grouped field should not be aggregated"
+            // when the user leaves aggregateField blank (the common case for COUNT).
+            // COUNT(fieldName) where fieldName == groupByField is rejected by SOQL.
+            // No alias — Data Cloud SOQL rejects ORDER BY on an alias; ORDER BY repeats
+            // the full expression instead.
+            // COUNT(Id) avoids "Grouped field should not be aggregated" (can't count the
+            // GROUP BY field) while being valid in both standard and Data Cloud SOQL.
+            // COUNT() with no argument is rejected by standard SOQL in a mixed SELECT.
+            String aggFn = (params.aggregateFunction == 'COUNT')
+                ? 'COUNT(Id)'
                 : params.aggregateFunction + '(' + params.aggregateField + ')';
 
             // Build WHERE clause. sourceValue is a bind variable; filter values
