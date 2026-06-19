@@ -401,13 +401,21 @@ export default class DataCloudChart extends LightningElement {
 
     _formatGroupLabel(value) {
         if (!this._groupByTrunc || value === null || value === undefined) return String(value || '');
-        const num = parseInt(value, 10);
+        // Date bucketing now comes from the Query API's DATE_TRUNC, which returns the
+        // period-start timestamp, e.g. "2026-06-01 00:00:00.000 UTC". Parse the leading
+        // Y-M-D (avoids timezone drift) and format per bucket.
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+        if (!m) return String(value);
+        const year  = m[1];
+        const month = parseInt(m[2], 10); // 1-12
+        const day   = parseInt(m[3], 10);
+        const mon   = MONTH_LABELS[month - 1] || '';
         switch (this._groupByTrunc) {
-            case 'year':    return String(value);
-            case 'quarter': return `Q${num}`;
-            case 'month':   return (!isNaN(num) && num >= 1 && num <= 12) ? MONTH_LABELS[num - 1] : String(value);
-            case 'week':    return `Wk ${num}`;
-            case 'day':     return String(value);
+            case 'year':    return year;
+            case 'quarter': return `Q${Math.floor((month - 1) / 3) + 1} ${year}`;
+            case 'month':   return `${mon} ${year}`;
+            case 'week':    return `Wk of ${mon} ${day}`;
+            case 'day':     return `${mon} ${day}, ${year}`;
             default:        return String(value);
         }
     }
@@ -501,15 +509,34 @@ export default class DataCloudChart extends LightningElement {
     }
 
     _resolveErrorMessage(err) {
-        if (this._isGenericPlatformError(err)) {
+        const raw = this._extractErrorMessage(err);
+
+        // Date bucketing: Data Cloud rejects SOQL date functions (CALENDAR_MONTH, etc.)
+        // on DMOs. This surfaces either as an explicit "not supported" message or, more
+        // often, as the opaque platform gack that bypasses Apex try/catch. When a
+        // truncation is configured, that's overwhelmingly the cause — say so plainly
+        // rather than blaming an unmapped field.
+        const unsupportedFn = /\bnot supported\b/i.test(raw);
+        if (unsupportedFn || (this._isGenericPlatformError(err) && this._groupByTrunc)) {
             return (
-                `Couldn't load chart data. A configured field may be defined on ` +
-                `${this._targetObject || 'the target object'} but not mapped in the ` +
-                `Data Cloud data model — unmapped fields aren't queryable. ` +
-                `Verify that Target Field, Group By, and Aggregate fields are all ` +
-                `mapped in Setup → Data Cloud → Data Model.`
+                `Couldn't load chart data. Date bucketing (Group By Truncation) isn't ` +
+                `supported on Data Cloud objects — the underlying date functions only ` +
+                `work on standard or custom objects. Remove the Group By Truncation, or ` +
+                `group by a non-date field.`
             );
         }
-        return this._extractErrorMessage(err);
+
+        // Other opaque platform errors: could be an unmapped field OR an unsupported
+        // operation. Don't assert one cause definitively.
+        if (this._isGenericPlatformError(err)) {
+            return (
+                `Couldn't load chart data. A configured field may not be mapped in the ` +
+                `Data Cloud data model on ${this._targetObject || 'the target object'}, ` +
+                `or the query uses an operation Data Cloud doesn't support. Verify the ` +
+                `Target Field, Group By, and Aggregate fields are mapped in ` +
+                `Setup → Data Cloud → Data Model.`
+            );
+        }
+        return raw;
     }
 }

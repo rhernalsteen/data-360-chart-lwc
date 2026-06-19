@@ -27,16 +27,21 @@
                       type="String"
                       label="Group By Field"
                       description="Field to group by — becomes the chart axis labels or pie slices (e.g., ssot__Stage__c)." />
+            <property name="groupByTrunc"
+                      type="String"
+                      label="Group By Truncation"
+                      datasource="day,week,month,quarter,year"
+                      description="Date/datetime fields only. Buckets values by the selected interval — e.g., 'month' groups all records from the same calendar month. Ignored if the group-by field is not a date or datetime type." />
+            <property name="aggregateField"
+                      type="String"
+                      label="Aggregate Field"
+                      description="Numeric field to aggregate (e.g., ssot__TotalAmount__c). Not required for COUNT." />
             <property name="aggregateFunction"
                       type="String"
                       label="Aggregate Function"
                       datasource="SUM,COUNT,AVG,MIN,MAX"
                       default="COUNT"
                       description="Aggregate function to apply to the Aggregate Field." />
-            <property name="aggregateField"
-                      type="String"
-                      label="Aggregate Field"
-                      description="Numeric field to aggregate (e.g., ssot__TotalAmount__c). Not required for COUNT." />
             <property name="sortBy"
                       type="String"
                       label="Sort By"
@@ -49,16 +54,15 @@
                       datasource="ASC,DESC"
                       default="DESC"
                       description="ASC or DESC. When Sort By is 'aggregate', DESC shows the largest values first. When Sort By is 'groupBy', ASC is alphabetical A→Z." />
+            <property name="filters"
+                      type="String"
+                      label="Filters (Optional)"
+                      description="Extra WHERE conditions. Format: fieldApiName|operator|value, comma-separated. Operators: eq, neq, gt, gte, lt, lte, like, in, notnull, isnull. Use {FieldName} to reference the current record's field value. Example: ssot__Stage__c|eq|Closed Won, ssot__Amount__c|gte|1000, ssot__CloseDate__c|gte|{CloseDate}" />
             <property name="chartType"
                       type="String"
                       label="Chart Type"
                       datasource="verticalBar,horizontalBar,pie,line,donut,kpi"
                       default="verticalBar" />
-            <property name="groupByTrunc"
-                      type="String"
-                      label="Group By Truncation"
-                      datasource="day,week,month,quarter,year"
-                      description="Date/datetime fields only. Buckets values by the selected interval — e.g., 'month' groups all records from the same calendar month. Ignored if the group-by field is not a date or datetime type." />
             <property name="stackByField"
                       type="String"
                       label="Stack By Field"
@@ -83,10 +87,6 @@
                       label="Chart Height (px)"
                       default="300"
                       description="Canvas height in pixels (100–1000). Default 300. Increase for charts with many groups that need more vertical space." />
-            <property name="filters"
-                      type="String"
-                      label="Filters (Optional)"
-                      description="Extra WHERE conditions. Format: fieldApiName|operator|value, comma-separated. Operators: eq, neq, gt, gte, lt, lte, like, in, notnull, isnull. Use {FieldName} to reference the current record's field value. Example: ssot__Stage__c|eq|Closed Won, ssot__Amount__c|gte|1000, ssot__CloseDate__c|gte|{CloseDate}" />
         </targetConfig>
     </targetConfigs>
 </LightningComponentBundle>

@@ -104,11 +104,12 @@ OPTIONAL PROPERTIES
   Sort Direction          DESC puts the highest values first (default)
                           ASC reverses the order
 
-  Group By Truncation     Date/datetime fields only. Buckets values by:
+  Group By Truncation     Buckets a date/datetime Group By Field by:
                           day, week, month, quarter, or year
-                          Month labels display as Jan/Feb/Mar, quarters as Q1/Q2,
-                          weeks as Wk 1/Wk 2, etc.
-                          Ignored if the Group By Field is not a date or datetime.
+                          Labels display as e.g. Jun 2026, Q2 2026, Jun 5, 2026,
+                          Wk of Jun 1. Runs via the Data Cloud Query API (in-org,
+                          no extra setup). Set only on date/datetime fields — on a
+                          non-date field the chart will error.
 
   Stack By Field          A second GROUP BY field that adds color-coded stacking
                           to bar charts. Each distinct value becomes a segment.
@@ -249,10 +250,12 @@ Chart renders but values look wrong
   Find the object and confirm the field is mapped. Unmapped fields cannot
   be queried.
 
-Date bucketing is ignored
-  Group By Truncation only applies to date and datetime fields. If the Group
-  By Field is a string, picklist, or other non-date type, the truncation
-  setting is silently ignored and the raw field value is used.
+Date-bucketed chart shows an error
+  Group By Truncation runs DATE_TRUNC through the Data Cloud Query API. Set it
+  only on date/datetime Group By Fields — on a string, picklist, or other
+  non-date field the chart will error. If you instead see a permissions error,
+  the running user needs Data Cloud access (the Query API requires it; plain
+  non-bucketed charts use SOQL and do not).
 
 
 ================================================================================
@@ -263,6 +266,6 @@ This component pairs with Data 360 Related List, which displays Data Cloud
 records as a sortable, filterable table on any CRM record page.
 
 Package install URL:
-  https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000K9fh
+  https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KoLd
 
 ================================================================================

@@ -434,32 +434,28 @@ private class DataCloudChartControllerTest {
     }
 
     @IsTest
-    static void groupByExprIgnoresTruncForNonDateField() {
-        // STRING field with trunc set — silently returns plain field
-        String expr = DataCloudChartController.buildGroupByExpression('Department', 'month', Schema.DisplayType.STRING);
-        System.assertEquals('Department', expr);
+    static void groupByExprAppliesTruncRegardlessOfDetectedType() {
+        // Regression: Data Cloud DMO describe often reports a real datetime field as a
+        // non-date type (or not at all). The truncation must still be applied — honoring
+        // the admin's explicit choice — rather than falling back to the raw field, which
+        // caused "field ... can not be grouped in a query call" on a valid date group.
+        String typedNonDate = DataCloudChartController.buildGroupByExpression(
+            'ssot__CreatedDate__c', 'month', Schema.DisplayType.STRING);
+        System.assertEquals('CALENDAR_MONTH(ssot__CreatedDate__c)', typedNonDate,
+            'Truncation must apply even when describe reports a non-date type');
+
+        String typeUnknown = DataCloudChartController.buildGroupByExpression(
+            'ssot__CreatedDate__c', 'month', null);
+        System.assertEquals('CALENDAR_MONTH(ssot__CreatedDate__c)', typeUnknown,
+            'Truncation must apply when describe is unavailable (null type)');
     }
 
-    // ---------- Date bucketing integration ----------
-
-    @IsTest
-    static void groupByTruncMonthSucceeds() {
-        // CreatedDate is DATETIME on Contact — CALENDAR_MONTH should apply without error
-        DataCloudChartController.QueryParams p = baseParams();
-        p.groupByField  = 'CreatedDate';
-        p.groupByTrunc  = 'month';
-        p.sortBy        = 'groupBy';
-
-        Test.startTest();
-        DataCloudChartController.ChartResult result =
-            DataCloudChartController.getChartData(JSON.serialize(p));
-        Test.stopTest();
-
-        System.assertNotEquals(null, result);
-        System.assertNotEquals(null, result.rows);
-        // All 5 contacts were created in the same test run → all in one month bucket
-        System.assert(result.rows.size() >= 1, 'Expected at least one month bucket');
-    }
+    // ---------- Date bucketing ----------
+    // NOTE: end-to-end date bucketing now runs through the Data Cloud Query API
+    // (ConnectApi.CdpQuery + DATE_TRUNC), which cannot execute in data-siloed Apex
+    // tests ("ConnectApi methods are not supported in data siloed tests"). The SQL
+    // construction is covered by the buildAnsiBucketSql unit tests above; the live
+    // round-trip is validated manually against the org.
 
     @IsTest
     static void invalidGroupByTruncThrows() {
@@ -581,6 +577,72 @@ private class DataCloudChartControllerTest {
             DataCloudChartController.getChartData(JSON.serialize(baseParams()));
         System.assertEquals(null, result.aggregateFieldLabel,
             'aggregateFieldLabel should be null for COUNT with no aggregate field');
+    }
+
+    // ---------- ANSI date-bucket SQL (Query API path) ----------
+
+    @IsTest
+    static void ansiBucketSqlCountMonth() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.groupByField = 'CreatedDate';
+        p.groupByTrunc = 'month';
+        String sql = DataCloudChartController.buildAnsiBucketSql(p, 'DESC', 25);
+        System.assert(sql.contains('DATE_TRUNC(\'month\', CreatedDate) AS bucket'), sql);
+        System.assert(sql.contains('COUNT(*) AS aggval'), sql);
+        System.assert(sql.contains('FROM Contact'), sql);
+        System.assert(sql.contains('WHERE Email = \'chart@example.com\''), sql);
+        System.assert(sql.contains('GROUP BY DATE_TRUNC(\'month\', CreatedDate)'), sql);
+        System.assert(sql.contains('ORDER BY aggval DESC'), sql);
+        System.assert(sql.endsWith('LIMIT 25'), sql);
+    }
+
+    @IsTest
+    static void ansiBucketSqlSumSortByGroupWithStack() {
+        DataCloudChartController.QueryParams p = baseParams();
+        p.groupByField      = 'CreatedDate';
+        p.groupByTrunc      = 'quarter';
+        p.aggregateFunction = 'SUM';
+        p.aggregateField    = 'Amount__c';
+        p.stackByField      = 'Region__c';
+        p.sortBy            = 'groupBy';
+        String sql = DataCloudChartController.buildAnsiBucketSql(p, 'ASC', 50);
+        System.assert(sql.contains('SUM(Amount__c) AS aggval'), sql);
+        System.assert(sql.contains('Region__c AS stackval'), sql);
+        System.assert(sql.contains('GROUP BY DATE_TRUNC(\'quarter\', CreatedDate), Region__c'), sql);
+        System.assert(sql.contains('ORDER BY bucket ASC'), sql);
+    }
+
+    @IsTest
+    static void ansiFilterClauseVariants() {
+        DataCloudChartController.FilterCondition eqc = new DataCloudChartController.FilterCondition();
+        eqc.field = 'Stage__c'; eqc.operator = 'eq'; eqc.value = 'Closed Won';
+        System.assertEquals('Stage__c = \'Closed Won\'', DataCloudChartController.buildAnsiFilterClause(eqc));
+
+        DataCloudChartController.FilterCondition gtec = new DataCloudChartController.FilterCondition();
+        gtec.field = 'Amount__c'; gtec.operator = 'gte'; gtec.value = '1000';
+        System.assertEquals('Amount__c >= 1000', DataCloudChartController.buildAnsiFilterClause(gtec));
+
+        DataCloudChartController.FilterCondition nn = new DataCloudChartController.FilterCondition();
+        nn.field = 'Amount__c'; nn.operator = 'notnull';
+        System.assertEquals('Amount__c IS NOT NULL', DataCloudChartController.buildAnsiFilterClause(nn));
+
+        DataCloudChartController.FilterCondition isn = new DataCloudChartController.FilterCondition();
+        isn.field = 'Amount__c'; isn.operator = 'isnull';
+        System.assertEquals('Amount__c IS NULL', DataCloudChartController.buildAnsiFilterClause(isn));
+
+        DataCloudChartController.FilterCondition inc = new DataCloudChartController.FilterCondition();
+        inc.field = 'Stage__c'; inc.operator = 'in'; inc.value = 'Closed Won;Prospecting';
+        String clause = DataCloudChartController.buildAnsiFilterClause(inc);
+        System.assert(clause.startsWith('Stage__c IN ('), clause);
+        System.assert(clause.contains('\'Closed Won\''), clause);
+    }
+
+    @IsTest
+    static void ansiLiteralAndValueEscaping() {
+        // Single quotes doubled for ANSI (Trino), not backslash-escaped
+        System.assertEquals('\'O\'\'Brien\'', DataCloudChartController.ansiLiteral('O\'Brien'));
+        System.assertEquals('1000', DataCloudChartController.ansiValue('1000'));     // numeric unquoted
+        System.assertEquals('\'Gold\'', DataCloudChartController.ansiValue('Gold')); // string quoted
     }
 
 }

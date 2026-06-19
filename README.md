@@ -10,7 +10,7 @@ Drop the component on a CRM record page (e.g., Account, Contact, Opportunity), p
 
 - **Six chart types:** Vertical Bar, Horizontal Bar, Pie, Donut, Line, and KPI (single large metric)
 - Any GROUP BY field as the axis labels or pie slices
-- **Date bucketing** on date/datetime GROUP BY fields — bucket by day, week, month, quarter, or year with auto-formatted labels (Jan/Feb, Q1/Q2, Wk 1, etc.)
+- **Date bucketing** on date/datetime GROUP BY fields — bucket by day, week, month, quarter, or year with auto-formatted labels (e.g. `Jun 2026`, `Q2 2026`, `Jun 5, 2026`, `Wk of Jun 1`). Runs through the Data Cloud Query API in-org — no extra setup.
 - **Stacked and grouped bar charts** — add a second Stack By field to break each bar into color-coded segments
 - Five aggregate functions: **SUM**, **COUNT**, **AVG**, **MIN**, **MAX**
 - Sort by aggregate value or group label, ascending or descending
@@ -39,8 +39,8 @@ This is a one-time step per org. Static Resources cannot be included in unmanage
 
 | Org Type | Install URL |
 |---|---|
-| **Production / Developer Edition** | [https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Kn9R](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Kn9R) |
-| **Sandbox** | [https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Kn9R](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Kn9R) |
+| **Production / Developer Edition** | [https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KnKj](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KnKj) |
+| **Sandbox** | [https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KnKj](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KnKj) |
 
 Upload the `ChartJS` Static Resource (see Prerequisites above) before or after installing. See [POST_INSTALL.txt](POST_INSTALL.txt) for a step-by-step consultant setup guide.
 
@@ -55,7 +55,7 @@ force-app/main/default/
 ├── classes/
 │   ├── DataCloudChartController.cls          ← @AuraEnabled Apex
 │   ├── DataCloudChartController.cls-meta.xml
-│   ├── DataCloudChartControllerTest.cls      ← 49 Apex tests
+│   ├── DataCloudChartControllerTest.cls      ← 53 Apex tests
 │   └── DataCloudChartControllerTest.cls-meta.xml
 └── lwc/
     └── dataCloudChart/
@@ -86,15 +86,18 @@ Source value resolved → LWC builds params and calls @AuraEnabled Apex:
         ▼
 Apex → JSON.deserialize(paramsJson, QueryParams.class)
      → regex validation (Layer 1) → Schema describe (Layer 2, best-effort)
-     → BUILD SOQL:
-         KPI mode:    SELECT AGG(Id) FROM targetObject WHERE targetField = :sourceValue
-         Standard:    SELECT [DATE_FN(]groupByField[)] [groupBucket], AGG(aggregateField)
-                             [, stackByField]
-                      FROM targetObject
-                      WHERE targetField = :sourceValue [AND filters]
-                      GROUP BY [DATE_FN(]groupByField[)] [, stackByField]
-                      ORDER BY AGG(aggregateField)|groupByField ASC|DESC
-                      LIMIT maxGroups (default 25, hard cap 100)
+     → BUILD QUERY:
+         KPI mode:       SELECT AGG(Id) FROM targetObject WHERE targetField = :sourceValue   (SOQL)
+         Date bucketing: SELECT DATE_TRUNC('unit', groupByField) AS bucket, AGG(...) AS aggval
+                                [, stackByField AS stackval]
+                         FROM targetObject WHERE ... GROUP BY DATE_TRUNC(...) [, stackByField]
+                         ORDER BY bucket|aggval ASC|DESC LIMIT maxGroups
+                         → runs via ConnectApi.CdpQuery (Query API / ANSI SQL), in-org, no callout
+         Standard:       SELECT groupByField, AGG(aggregateField) [, stackByField]
+                         FROM targetObject WHERE targetField = :sourceValue [AND filters]
+                         GROUP BY groupByField [, stackByField]
+                         ORDER BY AGG(aggregateField)|groupByField ASC|DESC
+                         LIMIT maxGroups (default 25, hard cap 100)   (SOQL)
         │
         ▼
 Results coerced to List<Map<String, Object>>:
@@ -132,9 +135,9 @@ Data Cloud and standard SOQL both reject `COUNT(field)` when that field is the `
 
 Data Cloud SOQL rejects `ORDER BY` on an aggregate alias (e.g., `ORDER BY aggValue` fails with "No such column 'aggValue'"). The controller repeats the full expression: `ORDER BY SUM(ssot__TotalAmount__c) DESC`.
 
-#### 6. Date function aliased as `groupBucket` in SELECT
+#### 6. Date bucketing runs through the Data Cloud Query API (ANSI SQL)
 
-When a date truncation is applied (e.g., `CALENDAR_MONTH(CreatedDate)`), the SELECT expression is aliased: `CALENDAR_MONTH(CreatedDate) groupBucket`. Results are read with `ar.get('groupBucket')` for reliability across standard SOQL and Data Cloud. GROUP BY and ORDER BY repeat the full function expression without an alias (Data Cloud rejects aliases there).
+Data Cloud SOQL does **not** support date-truncation functions (`CALENDAR_MONTH`, `DAY_ONLY`, etc.) on DMOs — they only work on standard objects. So when a Group By Truncation is set, the controller builds an **ANSI SQL** query using `DATE_TRUNC('unit', field)` and runs it through `ConnectApi.CdpQuery.queryAnsiSqlV2` — in-org, **no callout or Named Credential**. The positional result rows are mapped to the same `{ groupValue, aggValue, [stackValue] }` shape the LWC consumes, and the aggregate is coerced to a number (Data Cloud can return SUM as a high-precision string). All non-bucketed charts stay on the SOQL/`AggregateResult` path. The LWC formats the `DATE_TRUNC` period-start timestamp into friendly labels (`Jun 2026`, `Q2 2026`, `Jun 5, 2026`).
 
 #### 7. KPI mode skips GROUP BY entirely
 
@@ -217,7 +220,7 @@ Users who aren't system administrators need **Apex Class Access** to `DataCloudC
 | **Chart Type** | Picklist | ✓ | `verticalBar`, `horizontalBar`, `pie`, `donut`, `line`, or `kpi`. |
 | **Sort By** | Picklist | — | `aggregate` (default) — orders by value. `groupBy` — orders alphabetically by label. |
 | **Sort Direction** | Picklist | — | `ASC` or `DESC`. Defaults to `DESC`. |
-| **Group By Truncation** | Picklist | — | Date/datetime fields only. Buckets by `day`, `week`, `month`, `quarter`, or `year`. Ignored for non-date fields. |
+| **Group By Truncation** | Picklist | — | Buckets a date/datetime Group By Field by `day`, `week`, `month`, `quarter`, or `year` (labels like `Jun 2026`, `Q2 2026`). Runs via the Data Cloud Query API (in-org). Set only on date/datetime fields — on other types the query errors. |
 | **Stack By Field** | String | — | Second GROUP BY field for stacked/grouped bar charts. Each distinct value becomes a color segment. |
 | **Stack Mode** | Picklist | — | `stacked` (default) or `grouped`. Only applies when Stack By Field is set. |
 | **Max Groups** | Integer | — | Maximum groups returned, 1–100. Defaults to 25. |
@@ -282,8 +285,9 @@ Users who aren't system administrators need **Apex Class Access** to `DataCloudC
 
 | Constraint | How the component handles it |
 |---|---|
-| `ORDER BY` on aggregate aliases rejected | Full aggregate expression repeated in `ORDER BY` (e.g., `ORDER BY SUM(ssot__TotalAmount__c) DESC`) |
-| `COUNT(groupByField)` rejected | Uses `COUNT(Id)` instead |
+| Date functions (`CALENDAR_MONTH`, `DAY_ONLY`, …) unsupported in SOQL on DMOs | Date bucketing runs through the Data Cloud Query API (ANSI SQL `DATE_TRUNC`) via `ConnectApi.CdpQuery` — in-org, no callout |
+| `ORDER BY` on aggregate aliases rejected (SOQL path) | Full aggregate expression repeated in `ORDER BY` (e.g., `ORDER BY SUM(ssot__TotalAmount__c) DESC`) |
+| `COUNT(groupByField)` rejected | Uses `COUNT(Id)` (SOQL) / `COUNT(*)` (Query API) |
 | `LIMIT` rejected on scalar aggregate | KPI queries omit `LIMIT` — scalar aggregates always return one row |
 | `HAVING` clause not reliably supported | Not used — filter before aggregation via the WHERE filter DSL |
 | `Schema.describeSObjects()` may fail for some DMOs | Falls back to regex-only field validation |
@@ -303,7 +307,7 @@ sf apex run test \
   --code-coverage
 ```
 
-**49 Apex tests** covering: input validation, SOQL injection prevention, sort direction, filter DSL, aggregate functions (SUM/COUNT/AVG), date bucketing (`buildGroupByExpression` unit tests + integration), KPI mode, `stackByField` validation, `maxGroups` clamping, and the JSON wrapper.
+**53 Apex tests** covering: input validation, SOQL injection prevention, sort direction, filter DSL, aggregate functions (SUM/COUNT/AVG), date bucketing (ANSI SQL builder unit tests — `buildAnsiBucketSql` / `buildAnsiFilterClause` / `ansiLiteral`), KPI mode, `stackByField` validation, `maxGroups` clamping, and the JSON wrapper. *(End-to-end date bucketing uses `ConnectApi.CdpQuery`, which can't run in data-siloed Apex tests — its SQL is unit-tested and the round-trip is validated against the org.)*
 
 ### LWC Jest tests
 
@@ -323,7 +327,8 @@ npm test
 | Opaque platform error or "unmapped field" message | Group By / Aggregate / Stack By field not mapped in Data Cloud data model | Remove the offending field; verify in Setup → Data Cloud → Data Model |
 | **"You don't have access"** | Running user lacks Apex Class Access | Assign a permission set granting access to `DataCloudChartController` |
 | Empty state despite data existing | Source field is null on the CRM record, or Target Field doesn't match | Check the source field value and verify the DMO's linking field |
-| Date bucketing has no effect | Group By Field is not a date or datetime type | Date truncation only applies to date/datetime fields; ignored otherwise |
+| Date-bucketed chart shows an error | Group By Truncation is set on a non-date field | Truncation runs `DATE_TRUNC` via the Query API — set it only on date/datetime fields |
+| Date-bucketed chart errors with a permissions message | Running user lacks Data Cloud Query API access | Date bucketing uses `ConnectApi.CdpQuery`; ensure the user has Data Cloud access (non-bucketed charts use plain SOQL and don't need it) |
 
 ---
 

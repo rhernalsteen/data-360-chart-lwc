@@ -209,93 +209,135 @@ public without sharing class DataCloudChartController {
                 : 'DESC';
             String dir = VALID_DIRECTIONS.contains(rawDir) ? rawDir : 'DESC';
 
-            // Determine group expression (plain field or date function)
-            String groupByExpr   = isKpi ? null : buildGroupByExpression(params.groupByField, params.groupByTrunc, groupByFieldType);
-            // When a date function is applied, alias it as 'groupBucket' so ar.get() is reliable
-            Boolean isFunctionExpr = groupByExpr != null && !groupByExpr.equalsIgnoreCase(params.groupByField);
-            String groupReadKey    = isFunctionExpr ? 'groupBucket' : (isKpi ? null : params.groupByField);
-            String selectGroupExpr = isFunctionExpr ? (groupByExpr + ' groupBucket') : (isKpi ? null : params.groupByField);
-
-            // COUNT(Id) avoids "Grouped field should not be aggregated"; COUNT() is invalid in mixed SELECT.
-            // ORDER BY repeats the full expression — Data Cloud SOQL rejects ORDER BY on an alias.
-            String aggFn = (params.aggregateFunction == 'COUNT')
-                ? 'COUNT(Id)'
-                : params.aggregateFunction + '(' + params.aggregateField + ')';
-
-            // WHERE clause
-            String whereClause = params.targetField + ' = :sourceValue';
-            if (params.filters != null && !params.filters.isEmpty()) {
-                for (FilterCondition fc : params.filters) {
-                    if (fc == null) continue;
-                    whereClause += ' AND ' + buildFilterClause(fc);
-                }
-            }
-
             // Clamp maxGroups: default 25, hard cap 100
             Integer maxGroups = DEFAULT_GROUPS;
             if (params.maxGroups != null && params.maxGroups > 0) {
                 maxGroups = Math.min(params.maxGroups, MAX_GROUPS);
             }
 
-            String query;
-            if (isKpi) {
-                // Scalar aggregate — no GROUP BY, always returns one row.
-                // LIMIT is not allowed on non-grouped aggregate queries in standard SOQL.
-                query = 'SELECT ' + aggFn
-                      + ' FROM '  + params.targetObject
-                      + ' WHERE ' + whereClause;
-            } else {
-                Boolean sortByGroup = 'groupBy'.equalsIgnoreCase(params.sortBy);
-                String orderByExpr  = sortByGroup ? groupByExpr : aggFn;
+            // Date bucketing path: Data Cloud SOQL cannot truncate dates — CALENDAR_MONTH /
+            // CALENDAR_YEAR / DAY_ONLY etc. are unsupported on DMOs. Route grouped-by-date
+            // queries through the Data Cloud Query API (ANSI SQL DATE_TRUNC) via ConnectApi,
+            // which runs in-org with no Named Credential. All other queries stay on the
+            // proven SOQL/AggregateResult path below.
+            Boolean useAnsiDateBucket = !isKpi
+                && String.isNotBlank(params.groupByTrunc)
+                && VALID_DATE_TRUNCATIONS.contains(params.groupByTrunc);
 
-                // Build SELECT: group expression (possibly with alias) + aggregate + optional stack field
-                String selectPart  = selectGroupExpr + ', ' + aggFn;
-                String groupByPart = groupByExpr;
-                if (String.isNotBlank(params.stackByField)) {
-                    selectPart  += ', ' + params.stackByField;
-                    groupByPart += ', ' + params.stackByField;
-                }
-
-                query = 'SELECT ' + selectPart
-                      + ' FROM '    + params.targetObject
-                      + ' WHERE '   + whereClause
-                      + ' GROUP BY ' + groupByPart
-                      + ' ORDER BY ' + orderByExpr + ' ' + dir
-                      + ' LIMIT :maxGroups';
-            }
-
-            String sourceValue = params.sourceValue;
-            soqlForDiagnostic  = query;
-
-            phase = 'EXECUTE_QUERY';
-            // Cast to List<AggregateResult> — Data Cloud aggregate queries return
-            // AggregateResult SObjects, same as standard SOQL.
-            List<AggregateResult> results = (List<AggregateResult>) Database.query(query);
-
-            phase = 'CONVERT_RESULTS';
             List<Map<String, Object>> rows = new List<Map<String, Object>>();
-            Integer idx = 0;
-            for (AggregateResult ar : results) {
-                Map<String, Object> row = new Map<String, Object>();
-                if (isKpi) {
-                    row.put('groupValue', '');
-                    row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
-                } else {
-                    Object groupVal = ar.get(groupReadKey);
-                    // Defensive fallback if alias or function key differs on Data Cloud
-                    if (groupVal == null && isFunctionExpr) {
-                        groupVal = ar.get(params.groupByField);
-                    }
-                    row.put('groupValue', groupVal != null ? String.valueOf(groupVal) : '');
-                    row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
-                    if (String.isNotBlank(params.stackByField)) {
-                        Object stackVal = ar.get(params.stackByField);
-                        row.put('stackValue', stackVal != null ? String.valueOf(stackVal) : '');
+
+            if (useAnsiDateBucket) {
+                String ansiSql = buildAnsiBucketSql(params, dir, maxGroups);
+                soqlForDiagnostic = ansiSql;
+
+                phase = 'EXECUTE_QUERY';
+                ConnectApi.CdpQueryInput inp = new ConnectApi.CdpQueryInput();
+                inp.sql = ansiSql;
+                ConnectApi.CdpQueryOutputV2 res = ConnectApi.CdpQuery.queryAnsiSqlV2(inp);
+
+                phase = 'CONVERT_RESULTS';
+                // res.data is List<ConnectApi.CdpQueryV2Row> (not List<List>). Round-trip
+                // through JSON to get plain positional rows: [bucket, aggval, (stackval)].
+                Integer idx = 0;
+                if (res != null && res.data != null) {
+                    List<Object> dataRows = (List<Object>) JSON.deserializeUntyped(JSON.serialize(res.data));
+                    for (Object rowObj : dataRows) {
+                        List<Object> r = (List<Object>) rowObj;
+                        Map<String, Object> row = new Map<String, Object>();
+                        Object bucket = r.size() > 0 ? r.get(0) : null;
+                        Object aggv   = r.size() > 1 ? r.get(1) : null;
+                        // Data Cloud may return aggregates as high-precision strings; coerce to a
+                        // number so the chart renders identically to the SOQL/AggregateResult path.
+                        Decimal aggNum = 0;
+                        if (aggv != null) {
+                            try { aggNum = Decimal.valueOf(String.valueOf(aggv)); }
+                            catch (Exception ignored) { aggNum = 0; }
+                        }
+                        row.put('groupValue', bucket != null ? String.valueOf(bucket) : '');
+                        row.put('aggValue',   aggNum);
+                        if (String.isNotBlank(params.stackByField)) {
+                            Object sv = r.size() > 2 ? r.get(2) : null;
+                            row.put('stackValue', sv != null ? String.valueOf(sv) : '');
+                        }
+                        row.put('_rowKey', String.valueOf(idx));
+                        rows.add(row);
+                        idx++;
                     }
                 }
-                row.put('_rowKey', String.valueOf(idx));
-                rows.add(row);
-                idx++;
+            } else {
+                // ---------- SOQL / AggregateResult path (no date bucketing) ----------
+                String groupByExpr   = isKpi ? null : buildGroupByExpression(params.groupByField, params.groupByTrunc, groupByFieldType);
+                Boolean isFunctionExpr = groupByExpr != null && !groupByExpr.equalsIgnoreCase(params.groupByField);
+                String groupReadKey    = isFunctionExpr ? 'groupBucket' : (isKpi ? null : params.groupByField);
+                String selectGroupExpr = isFunctionExpr ? (groupByExpr + ' groupBucket') : (isKpi ? null : params.groupByField);
+
+                // COUNT(Id) avoids "Grouped field should not be aggregated"; COUNT() is invalid in mixed SELECT.
+                String aggFn = (params.aggregateFunction == 'COUNT')
+                    ? 'COUNT(Id)'
+                    : params.aggregateFunction + '(' + params.aggregateField + ')';
+
+                String whereClause = params.targetField + ' = :sourceValue';
+                if (params.filters != null && !params.filters.isEmpty()) {
+                    for (FilterCondition fc : params.filters) {
+                        if (fc == null) continue;
+                        whereClause += ' AND ' + buildFilterClause(fc);
+                    }
+                }
+
+                String query;
+                if (isKpi) {
+                    // Scalar aggregate — no GROUP BY/LIMIT (rejected on non-grouped aggregates).
+                    query = 'SELECT ' + aggFn
+                          + ' FROM '  + params.targetObject
+                          + ' WHERE ' + whereClause;
+                } else {
+                    Boolean sortByGroup = 'groupBy'.equalsIgnoreCase(params.sortBy);
+                    String orderByExpr  = sortByGroup ? groupByExpr : aggFn;
+
+                    String selectPart  = selectGroupExpr + ', ' + aggFn;
+                    String groupByPart = groupByExpr;
+                    if (String.isNotBlank(params.stackByField)) {
+                        selectPart  += ', ' + params.stackByField;
+                        groupByPart += ', ' + params.stackByField;
+                    }
+
+                    query = 'SELECT ' + selectPart
+                          + ' FROM '    + params.targetObject
+                          + ' WHERE '   + whereClause
+                          + ' GROUP BY ' + groupByPart
+                          + ' ORDER BY ' + orderByExpr + ' ' + dir
+                          + ' LIMIT :maxGroups';
+                }
+
+                String sourceValue = params.sourceValue;
+                soqlForDiagnostic  = query;
+
+                phase = 'EXECUTE_QUERY';
+                List<AggregateResult> results = (List<AggregateResult>) Database.query(query);
+
+                phase = 'CONVERT_RESULTS';
+                Integer idx = 0;
+                for (AggregateResult ar : results) {
+                    Map<String, Object> row = new Map<String, Object>();
+                    if (isKpi) {
+                        row.put('groupValue', '');
+                        row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
+                    } else {
+                        Object groupVal = ar.get(groupReadKey);
+                        if (groupVal == null && isFunctionExpr) {
+                            groupVal = ar.get(params.groupByField);
+                        }
+                        row.put('groupValue', groupVal != null ? String.valueOf(groupVal) : '');
+                        row.put('aggValue',   ar.get('expr0') != null ? ar.get('expr0') : 0);
+                        if (String.isNotBlank(params.stackByField)) {
+                            Object stackVal = ar.get(params.stackByField);
+                            row.put('stackValue', stackVal != null ? String.valueOf(stackVal) : '');
+                        }
+                    }
+                    row.put('_rowKey', String.valueOf(idx));
+                    rows.add(row);
+                    idx++;
+                }
             }
 
             ChartResult result = new ChartResult();
@@ -323,21 +365,23 @@ public without sharing class DataCloudChartController {
 
     /**
      * Returns the appropriate SOQL GROUP BY expression for a field.
-     * If a date truncation is specified and the field is a DATE or DATETIME type,
-     * wraps the field in the corresponding SOQL date function.
-     * Non-date fields silently ignore the truncation.
+     * If a date truncation is specified, wraps the field in the corresponding SOQL date
+     * function.
+     *
+     * The truncation is applied whenever the admin sets it — we deliberately do NOT gate
+     * on the describe-detected field type. Data Cloud DMO describe is unreliable and often
+     * reports a real datetime field as a non-date type; the old type gate then fell back to
+     * the raw field, producing "field <x> can not be grouped in a query call" on a correctly
+     * configured date group. Honoring the admin's explicit truncation is the robust behavior.
+     * Setting a truncation on a genuinely non-date field will surface a SOQL error — an
+     * explicit misconfiguration, preferable to silently dropping a valid date bucket.
      */
     @TestVisible
     private static String buildGroupByExpression(String field, String trunc, Schema.DisplayType fieldType) {
         if (String.isBlank(trunc) || !VALID_DATE_TRUNCATIONS.contains(trunc)) {
             return field;
         }
-        // When fieldType is known and is NOT a date/datetime, ignore trunc silently
-        Boolean isDate     = (fieldType == Schema.DisplayType.DATE);
-        Boolean isDatetime = (fieldType == Schema.DisplayType.DATETIME);
-        if (fieldType != null && !isDate && !isDatetime) {
-            return field;
-        }
+        Boolean isDate = (fieldType == Schema.DisplayType.DATE);
         // Apply the appropriate SOQL date function
         switch on trunc {
             when 'year'    { return 'CALENDAR_YEAR('    + field + ')'; }
@@ -350,6 +394,101 @@ public without sharing class DataCloudChartController {
             }
         }
         return field;
+    }
+
+    /**
+     * Builds the ANSI-SQL date-bucketing query for the Data Cloud Query API.
+     * Used only when a Group By Truncation is set. SELECT shape is positional:
+     *   [ DATE_TRUNC(unit, field) AS bucket, <agg> AS aggval, (<stackField> AS stackval) ]
+     * COUNT uses COUNT(*) (no Id-field assumption); other aggregates use the agg field.
+     * Field names are regex-validated upstream; literals are escaped via ansiLiteral.
+     */
+    @TestVisible
+    private static String buildAnsiBucketSql(QueryParams params, String dir, Integer maxGroups) {
+        String unit       = params.groupByTrunc.toLowerCase();
+        String bucketExpr = 'DATE_TRUNC(\'' + unit + '\', ' + params.groupByField + ')';
+        String aggExpr    = (params.aggregateFunction == 'COUNT')
+            ? 'COUNT(*)'
+            : params.aggregateFunction + '(' + params.aggregateField + ')';
+
+        String selectPart = bucketExpr + ' AS bucket, ' + aggExpr + ' AS aggval';
+        String groupPart  = bucketExpr;
+        if (String.isNotBlank(params.stackByField)) {
+            selectPart += ', ' + params.stackByField + ' AS stackval';
+            groupPart  += ', ' + params.stackByField;
+        }
+
+        String whereClause = params.targetField + ' = ' + ansiLiteral(params.sourceValue);
+        if (params.filters != null) {
+            for (FilterCondition fc : params.filters) {
+                if (fc == null) continue;
+                whereClause += ' AND ' + buildAnsiFilterClause(fc);
+            }
+        }
+
+        // ORDER BY the output alias — bucket for chronological/groupBy sort, else the aggregate.
+        String orderCol = 'groupBy'.equalsIgnoreCase(params.sortBy) ? 'bucket' : 'aggval';
+
+        return 'SELECT ' + selectPart
+             + ' FROM '     + params.targetObject
+             + ' WHERE '    + whereClause
+             + ' GROUP BY ' + groupPart
+             + ' ORDER BY ' + orderCol + ' ' + dir
+             + ' LIMIT '    + maxGroups;
+    }
+
+    /**
+     * ANSI-SQL variant of buildFilterClause. Same operators, but null checks use
+     * IS [NOT] NULL and string literals are escaped for ANSI (single quotes doubled).
+     */
+    @TestVisible
+    private static String buildAnsiFilterClause(FilterCondition fc) {
+        String field = fc.field;
+        String op    = fc.operator;
+
+        if (op == 'notnull') return field + ' IS NOT NULL';
+        if (op == 'isnull')  return field + ' IS NULL';
+
+        if (op == 'in') {
+            List<String> parts = fc.value != null ? fc.value.split(';') : new List<String>();
+            List<String> formatted = new List<String>();
+            for (String p : parts) {
+                formatted.add(ansiValue(p.trim()));
+            }
+            return field + ' IN (' + String.join(formatted, ', ') + ')';
+        }
+
+        String soqlOp;
+        switch on op {
+            when 'eq'   { soqlOp = '='; }
+            when 'neq'  { soqlOp = '!='; }
+            when 'gt'   { soqlOp = '>'; }
+            when 'gte'  { soqlOp = '>='; }
+            when 'lt'   { soqlOp = '<'; }
+            when 'lte'  { soqlOp = '<='; }
+            when 'like' { soqlOp = 'LIKE'; }
+            when else   { soqlOp = '='; }
+        }
+        return field + ' ' + soqlOp + ' ' + ansiValue(fc.value);
+    }
+
+    /** Numeric values unquoted; everything else as an escaped ANSI string literal. */
+    @TestVisible
+    private static String ansiValue(String val) {
+        if (val == null) return 'NULL';
+        try {
+            Decimal.valueOf(val);
+            return val;
+        } catch (Exception e) {
+            return ansiLiteral(val);
+        }
+    }
+
+    /** ANSI string literal: escape single quotes by doubling (Trino), wrap in quotes. */
+    @TestVisible
+    private static String ansiLiteral(String val) {
+        if (val == null) return 'NULL';
+        return '\'' + val.replace('\'', '\'\'') + '\'';
     }
 
     /**

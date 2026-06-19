@@ -118,19 +118,48 @@ describe('c-data-cloud-chart — render states', () => {
         expect(para.textContent).toContain('BOOM');
     });
 
-    it('shows unmapped-field guidance on generic platform error', async () => {
+    it('explains an unmapped field OR unsupported operation on a generic platform error', async () => {
         fetchChartDataJson.mockRejectedValueOnce({
             body: { message: 'An internal server error has occurred. Error ID: 123456789 (-1719234624)' }
         });
-        const el = buildElement({ targetObject: 'ssot__Opportunity__dlm' });
+        const el = buildElement({ targetObject: 'ssot__Opportunity__dlm' }); // no truncation set
         document.body.appendChild(el);
         await emitRecord(el, '001xxxxxxxxxxxx');
         await flush();
         await flush();
 
         const para = el.shadowRoot.querySelector('p');
-        expect(para.textContent).toMatch(/unmapped/i);
+        expect(para.textContent).toMatch(/mapped/i);
+        expect(para.textContent).toMatch(/doesn't support/i);
         expect(para.textContent).toContain('ssot__Opportunity__dlm');
+    });
+
+    it('explains unsupported date bucketing when a truncation is set and a platform error occurs', async () => {
+        fetchChartDataJson.mockRejectedValueOnce({
+            body: { message: 'An internal server error has occurred. Error ID: 99 (-1)' }
+        });
+        const el = buildElement({ groupByField: 'CreatedDate', groupByTrunc: 'month' });
+        document.body.appendChild(el);
+        await emitRecord(el, '001xxxxxxxxxxxx');
+        await flush();
+        await flush();
+
+        const para = el.shadowRoot.querySelector('p');
+        expect(para.textContent).toMatch(/date bucketing/i);
+    });
+
+    it('explains date bucketing on an explicit "not supported" error', async () => {
+        fetchChartDataJson.mockRejectedValueOnce({
+            body: { message: 'The function CALENDAR_MONTH is not supported in the SELECT clause of the query for this entity' }
+        });
+        const el = buildElement();
+        document.body.appendChild(el);
+        await emitRecord(el, '001xxxxxxxxxxxx');
+        await flush();
+        await flush();
+
+        const para = el.shadowRoot.querySelector('p');
+        expect(para.textContent).toMatch(/date bucketing/i);
     });
 });
 
